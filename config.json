@@ -1,0 +1,7 @@
+{
+    "focus_min": 10,
+    "break_min": 5,
+    "auto_inc_val": 5,
+    "inc_threshold": 2,
+    "max_focus_min": 60
+}
