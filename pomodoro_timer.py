@@ -3,6 +3,8 @@ from tkinter import messagebox
 import ctypes
 import os
 import json
+import csv
+from datetime import datetime, timedelta
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BG_COLOR    = "#333235"
@@ -12,6 +14,7 @@ FONT_BTN    = ("Fira Code", 11, "bold")
 FONT_LABEL  = ("Fira Code", 10)
 FONT_CLOSE  = ("Fira Code", 8)
 CONFIG_NAME = "config.json"
+STATS_NAME  = "stats.csv"
 
 # ── UI Constants ───────────────────────────────────────────────────────────────
 DIALOG_WIDTH  = 260
@@ -228,6 +231,55 @@ class SettingsWindow(DraggableWindow):
             MessageWindow(self, "Error", "Please enter a valid number!", is_error=True)
 
 
+# ── Stats window ───────────────────────────────────────────────────────────────
+class StatsWindow(DraggableWindow):
+    """A frameless, draggable Toplevel for viewing weekly focus history."""
+
+    def __init__(self, parent: tk.Misc, stats: dict):
+        super().__init__(parent, DIALOG_WIDTH, DIALOG_HEIGHT)
+        self._stats = stats
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        # Close button
+        tk.Button(
+            self, text="❌", font=FONT_CLOSE,
+            command=self.destroy, bg=BG_COLOR, fg="white", bd=0,
+        ).place(x=DIALOG_WIDTH - 25, y=10)
+
+        tk.Label(self, text="Weekly Stats", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR).pack(pady=(30, 10))
+
+        # Container for bars
+        container = tk.Frame(self, bg=BG_COLOR)
+        container.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # Get last 7 days
+        today = datetime.now().date()
+        days = [(today - timedelta(days=i)) for i in range(6, -1, -1)]
+        
+        max_val = max([self._stats.get(str(d), 0) for d in days] + [3600]) # Minimum scale of 1 hour
+
+        for d in days:
+            d_str = str(d)
+            val = self._stats.get(d_str, 0)
+            day_name = d.strftime("%a %d/%m")
+            
+            row = tk.Frame(container, bg=BG_COLOR)
+            row.pack(fill="x", pady=2)
+            
+            tk.Label(row, text=day_name, font=FONT_LABEL, fg="#aaa", bg=BG_COLOR, width=10, anchor="w").pack(side="left")
+            
+            # Progress bar simulation
+            bar_bg = tk.Frame(row, bg="#444345", height=12)
+            bar_bg.pack(side="left", fill="x", expand=True, padx=(5, 10))
+            
+            pct = min(val / max_val, 1.0)
+            if val > 0:
+                tk.Frame(bar_bg, bg=BTN_COLOR, width=int(pct * 120), height=12).place(x=0, y=0)
+            
+            tk.Label(row, text=f"{val//60}m", font=FONT_LABEL, fg="white", bg=BG_COLOR, width=4).pack(side="right")
+
+
 # ── Main app ───────────────────────────────────────────────────────────────────
 class PomodoroTimer:
     """Adaptive Pomodoro timer with persistent settings and auto-increment."""
@@ -238,6 +290,7 @@ class PomodoroTimer:
 
         self._configure_window()
         self._load_settings()
+        self._load_stats()
         self._init_state()
         self._build_ui()
 
@@ -267,6 +320,7 @@ class PomodoroTimer:
         self.is_focus_period        = True
         self.completed_sessions     = 0
         self.remaining_seconds      = self.focus_min * 60
+        self._initial_seconds       = self.remaining_seconds
 
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
@@ -275,6 +329,12 @@ class PomodoroTimer:
             self.root, text="⚙️", font=FONT_CLOSE,
             command=self._open_settings, bg=BG_COLOR, fg="white", bd=0,
         ).place(x=8, y=8)
+
+        # Stats button (next to settings)
+        tk.Button(
+            self.root, text="📊", font=FONT_CLOSE,
+            command=self._open_stats, bg=BG_COLOR, fg="white", bd=0,
+        ).place(x=32, y=8)
 
         # Close button (top right)
         tk.Button(
@@ -316,8 +376,10 @@ class PomodoroTimer:
             self._timer_id = None
 
     def reset_timer(self) -> None:
+        self._save_session_progress()
         self._stop()
         self.remaining_seconds = self.focus_min * 60
+        self._initial_seconds  = self.remaining_seconds
         self.is_focus_period   = True
         self._refresh_display()
 
@@ -331,7 +393,16 @@ class PomodoroTimer:
         else:
             self._on_period_end()
 
+    def _save_session_progress(self) -> None:
+        """Record focused time since last save point."""
+        if self.is_focus_period:
+            elapsed = self._initial_seconds - self.remaining_seconds
+            if elapsed > 0:
+                self._record_focus(elapsed)
+                self._initial_seconds = self.remaining_seconds
+
     def _on_period_end(self) -> None:
+        self._save_session_progress()
         self._stop()
         if self.is_focus_period:
             self._handle_focus_end()
@@ -358,6 +429,7 @@ class PomodoroTimer:
 
         self.is_focus_period    = False
         self.remaining_seconds  = self.break_min * 60
+        self._initial_seconds   = self.remaining_seconds
         
         msg = "\n".join(info_lines + ["Session complete!", f"Take a {self.break_min} min break."])
         
@@ -370,6 +442,7 @@ class PomodoroTimer:
     def _handle_break_end(self) -> None:
         self.is_focus_period   = True
         self.remaining_seconds = self.focus_min * 60
+        self._initial_seconds  = self.remaining_seconds
         
         buttons = [
             {"text": "Start Focus", "command": self._start},
@@ -381,6 +454,7 @@ class PomodoroTimer:
         """Immediately start next focus session."""
         self.is_focus_period = True
         self.remaining_seconds = self.focus_min * 60
+        self._initial_seconds  = self.remaining_seconds
         self._refresh_display()
         self._start()
 
@@ -426,10 +500,42 @@ class PomodoroTimer:
         self._save_settings()
         if not self.timer_running:
             self.remaining_seconds = self.focus_min * 60
+            self._initial_seconds  = self.remaining_seconds
         self._refresh_display()
 
     def _open_settings(self) -> None:
         SettingsWindow(self.root, self)
+
+    # ── Stats ─────────────────────────────────────────────────────────────────
+    @property
+    def _stats_path(self) -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), STATS_NAME)
+
+    def _load_stats(self) -> None:
+        self.stats = {}
+        if os.path.exists(self._stats_path):
+            try:
+                with open(self._stats_path, newline='') as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        if len(row) == 2:
+                            self.stats[row[0]] = int(row[1])
+            except (OSError, ValueError):
+                pass
+
+    def _record_focus(self, seconds: int) -> None:
+        today = str(datetime.now().date())
+        self.stats[today] = self.stats.get(today, 0) + seconds
+        try:
+            with open(self._stats_path, "w", newline='') as f:
+                writer = csv.writer(f)
+                for date, secs in self.stats.items():
+                    writer.writerow([date, secs])
+        except OSError:
+            pass
+
+    def _open_stats(self) -> None:
+        StatsWindow(self.root, self.stats)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
