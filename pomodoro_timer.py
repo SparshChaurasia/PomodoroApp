@@ -17,20 +17,158 @@ FONT_CLOSE  = ("Fira Code", 8)
 CONFIG_NAME = "config.json"
 STATS_NAME  = "stats.csv"
 
-# ── UI Constants ───────────────────────────────────────────────────────────────
-DIALOG_WIDTH  = 260
-DIALOG_HEIGHT = 300
-
 DEFAULTS = {
     "focus_min":    25,
     "break_min":    5,
+    "break_auto":   True,
     "auto_inc_val": 2,
     "inc_threshold": 5,
     "max_focus_min": 60,
 }
 
+# ── UI Constants ───────────────────────────────────────────────────────────────
+DIALOG_WIDTH  = 260
+DIALOG_HEIGHT = 300
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Business Logic & Data Managers (SOLID) ───────────────────────────────────
+
+class SettingsManager:
+    """Handles persistence of application configuration."""
+    def __init__(self, filename: str):
+        self.path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        self.data = DEFAULTS.copy()
+        self.load()
+
+    def load(self):
+        if os.path.exists(self.path):
+            try:
+                with open(self.path) as f:
+                    self.data.update(json.load(f))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    def save(self):
+        try:
+            with open(self.path, "w") as f:
+                json.dump(self.data, f, indent=4)
+        except OSError as e:
+            print(f"Failed to save settings: {e}")
+
+    def update(self, **kwargs):
+        self.data.update(kwargs)
+        self.save()
+
+    @property
+    def focus_min(self): return self.data["focus_min"]
+    @property
+    def break_min(self): return self.data["break_min"]
+    @property
+    def auto_inc_val(self): return self.data["auto_inc_val"]
+    @property
+    def inc_threshold(self): return self.data["inc_threshold"]
+    @property
+    def max_focus_min(self): return self.data["max_focus_min"]
+
+class StatsManager:
+    """Handles daily focus time tracking."""
+    def __init__(self, filename: str):
+        self.path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        self.stats = {}
+        self.load()
+
+    def load(self):
+        if os.path.exists(self.path):
+            try:
+                with open(self.path, newline='') as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        if len(row) == 2:
+                            self.stats[row[0]] = int(row[1])
+            except (OSError, ValueError):
+                pass
+
+    def record_focus(self, seconds: int):
+        if seconds <= 0: return
+        today = str(datetime.now().date())
+        self.stats[today] = self.stats.get(today, 0) + seconds
+        self.save()
+
+    def save(self):
+        try:
+            with open(self.path, "w", newline='') as f:
+                writer = csv.writer(f)
+                for date, secs in self.stats.items():
+                    writer.writerow([date, secs])
+        except OSError:
+            pass
+
+class TimerEngine:
+    """Core timer logic, independent of UI components."""
+    def __init__(self, settings: SettingsManager, on_tick=None, on_end=None):
+        self.settings = settings
+        self.on_tick = on_tick
+        self.on_end = on_end
+        
+        self.running = False
+        self.is_focus = True
+        self.completed_sessions = 0
+        self.remaining_seconds = 0
+        self.initial_seconds = 0
+        
+        self.reset_to_focus()
+
+    def reset_to_focus(self):
+        self.running = False
+        self.is_focus = True
+        self.remaining_seconds = self.settings.focus_min * 60
+        self.initial_seconds = self.remaining_seconds
+
+    def tick(self):
+        if not self.running: return
+        if self.remaining_seconds > 0:
+            self.remaining_seconds -= 1
+            if self.on_tick: self.on_tick()
+        else:
+            self.end_period()
+
+    def end_period(self):
+        self.running = False
+        if self.on_end: self.on_end()
+
+    def start(self): self.running = True
+    def stop(self):  self.running = False
+
+    def skip(self):
+        self.running = False
+        if self.is_focus:
+            self.transition_to_break()
+        else:
+            self.transition_to_focus()
+
+    def transition_to_break(self):
+        self.completed_sessions += 1
+        # Auto-increment logic
+        if self.completed_sessions % self.settings.inc_threshold == 0:
+            current_f = self.settings.data["focus_min"]
+            if current_f < self.settings.max_focus_min:
+                new_f = min(current_f + self.settings.auto_inc_val, self.settings.max_focus_min)
+                self.settings.update(focus_min=new_f, break_min=compute_break(new_f))
+        
+        self.is_focus = False
+        if self.settings.data.get("break_auto", True):
+            # Calculate break based on current focus_min
+            from_settings = compute_break(self.settings.focus_min)
+            self.remaining_seconds = from_settings * 60
+        else:
+            self.remaining_seconds = self.settings.break_min * 60
+        self.initial_seconds = self.remaining_seconds
+
+    def transition_to_focus(self):
+        self.is_focus = True
+        self.remaining_seconds = self.settings.focus_min * 60
+        self.initial_seconds = self.remaining_seconds
+
+# ── UI Helpers ───────────────────────────────────────────────────────────────
 def show_in_taskbar(root: tk.Tk) -> None:
     """Force a frameless (overrideredirect) window onto the Windows taskbar."""
     if os.name != "nt":
@@ -212,27 +350,53 @@ class SettingsWindow(DraggableWindow):
     def _build_ui(self) -> None:
         t = self._timer
 
-        # Close button
-        tk.Button(
-            self, text="❌", font=FONT_CLOSE,
-            command=self.destroy, bg=BG_COLOR, fg="white", bd=0,
-        ).place(x=DIALOG_WIDTH - 25, y=10)
+        # Title and Close button
+        tk.Label(self, text="SETTINGS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR
+                 ).place(x=DIALOG_WIDTH//2, y=18, anchor="center")
+        
+        tk.Button(self, text="❌", font=FONT_CLOSE, command=self.destroy, bg=BG_COLOR, fg="white", bd=0
+                  ).place(x=DIALOG_WIDTH - 20, y=18, anchor="center")
 
-        # Top spacer
-        tk.Frame(self, bg=BG_COLOR, height=40).pack()
+        # Top horizontal divider
+        tk.Frame(self, height=1, bg="#444444").pack(fill="x", padx=0, pady=(35, 0))
 
-        self._f  = self._make_row("Focus Mins",    t.focus_min)
-        self._b  = self._make_row("Break Mins",    t.break_min)
-        self._a  = self._make_row("Inc Amount",    t.auto_inc_val)
-        self._th = self._make_row("Sessions/Inc",  t.inc_threshold)
-        self._mf = self._make_row("Max Focus",     t.max_focus_min)
+        # Rows with 10px top padding for the first element to match timer spacing
+        self._f  = self._make_row("Focus", t.settings.focus_min, first=True)
+        
+        # Break row with Auto checkbox
+        self._break_auto_var = tk.BooleanVar(value=t.settings.data.get("break_auto", True))
+        self._b, self._b_chk = self._make_row_with_auto("Break", t.settings.break_min, self._break_auto_var)
+        
+        self._a  = self._make_row("Increment By", t.settings.auto_inc_val)
+        self._th = self._make_row("Increment Every", t.settings.inc_threshold)
+        self._mf = self._make_row("Max Focus", t.settings.max_focus_min)
 
         RoundedButton(self, text="💾 Save", command=self._save,
                       color=BTN_COLOR, width=DIALOG_WIDTH - 40).pack(pady=15)
 
-    def _make_row(self, label: str, value) -> tk.Entry:
+    def _make_row_with_auto(self, label: str, value, var: tk.BooleanVar) -> tuple[tk.Entry, tk.Checkbutton]:
         row = tk.Frame(self, bg=BG_COLOR)
         row.pack(fill="x", padx=20, pady=5)
+        tk.Label(row, text=label, bg=BG_COLOR, fg="white", font=FONT_LABEL).pack(side="left")
+        
+        entry = tk.Entry(row, width=8, bg="#444345", fg="white", bd=0,
+                         highlightthickness=1, highlightbackground="#555",
+                         insertbackground="white")
+        entry.insert(0, str(value))
+        entry.pack(side="right")
+        
+        chk = tk.Checkbutton(row, text="Auto", variable=var, bg=BG_COLOR, fg=BTN_COLOR, 
+                             selectcolor=BG_COLOR, activebackground=BG_COLOR, 
+                             activeforeground=BTN_COLOR, font=("Fira Code", 8),
+                             command=lambda: entry.config(state="disabled" if var.get() else "normal"))
+        chk.pack(side="right", padx=(0, 5))
+        
+        if var.get(): entry.config(state="disabled")
+        return entry, chk
+
+    def _make_row(self, label: str, value, first: bool = False) -> tk.Entry:
+        row = tk.Frame(self, bg=BG_COLOR)
+        row.pack(fill="x", padx=20, pady=((10 if first else 5), 5))
         tk.Label(row, text=label, bg=BG_COLOR, fg="white", font=FONT_LABEL).pack(side="left")
         entry = tk.Entry(row, width=8, bg="#444345", fg="white", bd=0,
                          highlightthickness=1, highlightbackground="#555",
@@ -245,7 +409,8 @@ class SettingsWindow(DraggableWindow):
         try:
             self._timer.apply_settings(
                 focus_min    = int(self._f.get()),
-                break_min    = int(self._b.get()),
+                break_min    = int(self._b.get()) if not self._break_auto_var.get() else self._timer.settings.break_min,
+                break_auto   = self._break_auto_var.get(),
                 auto_inc_val = int(self._a.get()),
                 inc_threshold= int(self._th.get()),
                 max_focus_min= int(self._mf.get()),
@@ -265,13 +430,15 @@ class StatsWindow(DraggableWindow):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        # Close button
-        tk.Button(
-            self, text="❌", font=FONT_CLOSE,
-            command=self.destroy, bg=BG_COLOR, fg="white", bd=0,
-        ).place(x=DIALOG_WIDTH - 25, y=10)
+        # Title and Close button
+        tk.Label(self, text="STATS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR
+                 ).place(x=DIALOG_WIDTH//2, y=18, anchor="center")
+        
+        tk.Button(self, text="❌", font=FONT_CLOSE, command=self.destroy, bg=BG_COLOR, fg="white", bd=0
+                  ).place(x=DIALOG_WIDTH - 20, y=18, anchor="center")
 
-        tk.Label(self, text="Weekly Stats", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR).pack(pady=(30, 10))
+        # Top horizontal divider
+        tk.Frame(self, height=1, bg="#444444").pack(fill="x", padx=0, pady=(35, 0))
 
         # Container for bars
         container = tk.Frame(self, bg=BG_COLOR)
@@ -306,19 +473,21 @@ class StatsWindow(DraggableWindow):
 
 # ── Main app ───────────────────────────────────────────────────────────────────
 class PomodoroTimer:
-    """Adaptive Pomodoro timer with persistent settings and auto-increment."""
+    """Main application controller (UI focus)."""
 
     def __init__(self, root: tk.Tk):
         self.root = root
         self._timer_id: str | None = None
 
-        self._configure_window()
-        self._load_settings()
-        self._load_stats()
-        self._init_state()
-        self._build_ui()
+        # SOLID Managers
+        self.settings = SettingsManager(CONFIG_NAME)
+        self.stats_mgr = StatsManager(STATS_NAME)
+        self.engine = TimerEngine(self.settings, on_tick=self._refresh_display, on_end=self._on_period_end)
 
-    # ── Window setup ──────────────────────────────────────────────────────────
+        self._configure_window()
+        self._build_ui()
+        self._refresh_display()
+
     def _configure_window(self) -> None:
         self.root.title("Pomodoro")
         w, h = 220, 230
@@ -326,7 +495,6 @@ class PomodoroTimer:
         self.root.overrideredirect(True)
         self.root.wm_attributes("-topmost", True)
 
-        # Rounded corners setup
         self.root.config(bg="#000001")
         self.root.wm_attributes("-transparentcolor", "#000001")
 
@@ -335,281 +503,173 @@ class PomodoroTimer:
         draw_rounded_window_bg(self.bg_canvas, w, h, 12, BG_COLOR, "#aaaaaa")
 
         show_in_taskbar(self.root)
-        
-        # Bindings for dragging
         self.bg_canvas.bind("<Button-1>", self._drag_start)
         self.bg_canvas.bind("<B1-Motion>", self._drag_move)
-        self.root.bind("<Button-1>",  self._drag_start)
-        self.root.bind("<B1-Motion>", self._drag_move)
 
     def _drag_start(self, event) -> None:
-        self._drag_x = event.x
-        self._drag_y = event.y
+        self._drag_x, self._drag_y = event.x, event.y
 
     def _drag_move(self, event) -> None:
         x = self.root.winfo_x() + (event.x - self._drag_x)
         y = self.root.winfo_y() + (event.y - self._drag_y)
         self.root.geometry(f"+{x}+{y}")
 
-    # ── State ─────────────────────────────────────────────────────────────────
-    def _init_state(self) -> None:
-        self.timer_running          = False
-        self.is_focus_period        = True
-        self.completed_sessions     = 0
-        self.remaining_seconds      = self.focus_min * 60
-        self._initial_seconds       = self.remaining_seconds
-
-    # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self) -> None:
-        # Settings button (top left)
-        tk.Button(
-            self.root, text="⚙️", font=FONT_CLOSE,
-            command=self._open_settings, bg=BG_COLOR, fg="white", bd=0,
-        ).place(x=8, y=8)
+        # Adjusted Y to 18 and added anchor="center" for all top bar items to ensure perfect middle alignment
+        tk.Button(self.root, text="⚙️", font=FONT_CLOSE, command=self._open_settings, bg=BG_COLOR, fg="white", bd=0
+                  ).place(x=15, y=18, anchor="center")
+        tk.Button(self.root, text="📊", font=FONT_CLOSE, command=self._open_stats, bg=BG_COLOR, fg="white", bd=0
+                  ).place(x=40, y=18, anchor="center")
+        tk.Button(self.root, text="❌", font=FONT_CLOSE, command=self.root.quit, bg=BG_COLOR, fg="white", bd=0
+                  ).place(x=206, y=18, anchor="center")
 
-        # Stats button (next to settings)
-        tk.Button(
-            self.root, text="📊", font=FONT_CLOSE,
-            command=self._open_stats, bg=BG_COLOR, fg="white", bd=0,
-        ).place(x=32, y=8)
-
-        # Close button (top right)
-        tk.Button(
-            self.root, text="❌", font=FONT_CLOSE,
-            command=self.root.quit, bg=BG_COLOR, fg="white", bd=0,
-        ).place(x=195, y=8)
-
-        # Status Label (Center)
-        self._lbl_status = tk.Label(
-            self.root, text="FOCUS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR
-        )
+        self._lbl_status = tk.Label(self.root, text="FOCUS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR)
         self._lbl_status.place(x=110, y=18, anchor="center")
 
-        # Horizontal divider
         tk.Frame(self.root, height=1, bg="#444444").pack(fill="x", padx=0, pady=(35, 0))
 
-        self._lbl_time = tk.Label(
-            self.root, text=self._format_time(),
-            font=FONT_MAIN, fg="white", bg=BG_COLOR,
-        )
+        self._lbl_time = tk.Label(self.root, text="00:00", font=FONT_MAIN, fg="white", bg=BG_COLOR)
         self._lbl_time.pack(pady=(10, 0))
 
-        # Small skip button (hidden by default)
-        self._btn_skip = RoundedButton(
-            self.root, text="⏭ Skip", command=self.skip_current_period,
-            width=70, height=22, radius=6, font=("Fira Code", 9, "bold"),
-            color=BG_COLOR
-        )
+        self._btn_skip = RoundedButton(self.root, text="⏭ Skip", command=self.skip_current_period,
+                                       width=70, height=22, radius=6, font=("Fira Code", 9, "bold"), color=BG_COLOR)
         self._skip_divider = tk.Frame(self.root, height=1, bg="#444444")
 
-        # Idle status label to fill space when not running
-        self._lbl_idle = tk.Label(
-            self.root, text="Ready to focus?", font=("Fira Code", 10, "italic"),
-            fg="#777777", bg=BG_COLOR
-        )
-        self._lbl_idle.pack(pady=(20, 0))
-
-        # Horizontal divider above bottom buttons
+        self._lbl_idle = tk.Label(self.root, text="", font=("Fira Code", 10, "italic"), fg="#777777", bg=BG_COLOR)
+        
         tk.Frame(self.root, height=1, bg="#444444").pack(side="bottom", fill="x")
-
-        # Use the transparent color for the frame to respect window rounding
         self._btn_frame = tk.Frame(self.root, bg="#000001", height=45)
         self._btn_frame.pack(side="bottom", fill="x")
         self._btn_frame.pack_propagate(False)
 
-        bw = 110
-        bh = 45
-        br = 12 # Match window radius
-
-        self._btn_toggle = RoundedButton(
-            self._btn_frame, text="▶ Start", command=self.toggle_timer,
-            width=bw, height=bh, radius=br, bg="#000001",
-            rounded=(False, False, False, True), # Only bottom-left rounded
-            border_edges=(True, True, True, True) # Show outer borders
-        )
+        bw, bh, br = 110, 45, 12
+        self._btn_toggle = RoundedButton(self._btn_frame, text="▶ Start", command=self.toggle_timer,
+                                         width=bw, height=bh, radius=br, bg="#000001",
+                                         rounded=(False, False, False, True), border_edges=(True, True, True, True))
         self._btn_toggle.pack(side="left")
 
-        self._btn_reset = RoundedButton(
-            self._btn_frame, text="🔄 Reset", command=self.reset_timer,
-            width=bw, height=bh, radius=br, bg="#000001",
-            rounded=(False, False, True, False), # Only bottom-right rounded
-            border_edges=(True, True, True, False) # Show outer borders, skip left
-        )
+        self._btn_reset = RoundedButton(self._btn_frame, text="🔄 Reset", command=self.reset_timer,
+                                        width=bw, height=bh, radius=br, bg="#000001",
+                                        rounded=(False, False, True, False), border_edges=(True, True, True, False))
         self._btn_reset.pack(side="left")
 
-    # ── Timer control ─────────────────────────────────────────────────────────
     def toggle_timer(self) -> None:
-        if self.timer_running:
+        if self.engine.running:
             self._stop()
         else:
             self._start()
 
     def _start(self) -> None:
-        self.timer_running = True
+        self.engine.start()
         self._btn_toggle.update(text="⏸️ Pause")
         self._tick()
 
     def _stop(self) -> None:
-        self.timer_running = False
+        self.engine.stop()
         self._btn_toggle.update(text="▶ Start")
         if self._timer_id:
             self.root.after_cancel(self._timer_id)
             self._timer_id = None
+        self._update_skip_visibility()
 
     def reset_timer(self) -> None:
         self._save_session_progress()
         self._stop()
-        self.completed_sessions = 0
-        self.remaining_seconds = self.focus_min * 60
-        self._initial_seconds  = self.remaining_seconds
-        self.is_focus_period   = True
+        self.engine.completed_sessions = 0
+        self.engine.reset_to_focus()
         self._refresh_display()
 
     def _tick(self) -> None:
-        if not self.timer_running:
-            return
-        if self.remaining_seconds > 0:
-            self.remaining_seconds -= 1
-            self._refresh_display()
+        if not self.engine.running: return
+        self.engine.tick()
+        if self.engine.running:
             self._timer_id = self.root.after(1000, self._tick)
-        else:
-            self._on_period_end()
 
     def _save_session_progress(self) -> None:
-        """Record focused time since last save point."""
-        if self.is_focus_period:
-            elapsed = self._initial_seconds - self.remaining_seconds
+        if self.engine.is_focus:
+            elapsed = self.engine.initial_seconds - self.engine.remaining_seconds
             if elapsed > 0:
-                self._record_focus(elapsed)
-                self._initial_seconds = self.remaining_seconds
+                self.stats_mgr.record_focus(elapsed)
+                self.engine.initial_seconds = self.engine.remaining_seconds
 
     def _on_period_end(self) -> None:
         self._save_session_progress()
         self._stop()
-        if self.is_focus_period:
+        if self.engine.is_focus:
             self._handle_focus_end()
         else:
             self._handle_break_end()
         self._refresh_display()
 
     def _handle_focus_end(self, silent: bool = False) -> None:
-        self.completed_sessions += 1
-
-        focus_increased = False
-        info_lines = []
-        if self.completed_sessions % self.inc_threshold == 0:
-            if self.focus_min < self.max_focus_min:
-                self.focus_min = min(self.focus_min + self.auto_inc_val, self.max_focus_min)
-                info_lines.append(f"🚀 Focus increased to {self.focus_min}m!")
-                focus_increased = True
-            else:
-                info_lines.append("⭐ Max focus level reached!")
-
-        # Only auto-scale break if focus has increased; otherwise respect manual setting
-        if focus_increased:
-            self.break_min = compute_break(self.focus_min)
-
-        self.is_focus_period    = False
-        self.remaining_seconds  = self.break_min * 60
-        self._initial_seconds   = self.remaining_seconds
+        old_f = self.settings.focus_min
+        self.engine.transition_to_break()
         
         if silent:
             self._start()
             return
 
-        msg = "\n".join(info_lines + ["Session complete!", f"Take a {self.break_min} min break."])
+        info = []
+        if self.settings.focus_min > old_f:
+            info.append(f"🚀 Focus increased to {self.settings.focus_min}m!")
         
-        buttons = [
-            {"text": "Start Break", "command": self._start},
-            {"text": "Skip Break",  "command": self.skip_break}
-        ]
+        msg = "\n".join(info + ["Session complete!", f"Take a {self.settings.break_min} min break."])
+        buttons = [{"text": "Start Break", "command": self._start}, {"text": "Skip Break", "command": self.skip_break}]
         self._show_dialog("Break Time", msg, buttons=buttons)
 
     def _handle_break_end(self, silent: bool = False) -> None:
-        self.is_focus_period   = True
-        self.remaining_seconds = self.focus_min * 60
-        self._initial_seconds  = self.remaining_seconds
-        
+        self.engine.transition_to_focus()
         if silent:
             self._start()
             return
-
-        buttons = [
-            {"text": "Start Focus", "command": self._start},
-            {"text": "End Session", "command": self.reset_timer}
-        ]
+        buttons = [{"text": "Start Focus", "command": self._start}, {"text": "End Session", "command": self.reset_timer}]
         self._show_dialog("Back to Work", "Break over! Time to focus.", buttons=buttons)
 
     def skip_break(self) -> None:
-        """Immediately start next focus session."""
-        self.is_focus_period = True
-        self.remaining_seconds = self.focus_min * 60
-        self._initial_seconds  = self.remaining_seconds
+        self.engine.transition_to_focus()
         self._refresh_display()
         self._start()
 
     def skip_current_period(self) -> None:
-        """Skip the active focus or break period without showing a dialog."""
-        initial = (self.focus_min if self.is_focus_period else self.break_min) * 60
-        if self.timer_running or self.remaining_seconds < initial:
+        initial = (self.settings.focus_min if self.engine.is_focus else self.settings.break_min) * 60
+        if self.engine.running or self.engine.remaining_seconds < initial:
             self._save_session_progress()
             self._stop()
-            if self.is_focus_period:
+            if self.engine.is_focus:
                 self._handle_focus_end(silent=True)
             else:
                 self._handle_break_end(silent=True)
             self._refresh_display()
 
     def _show_dialog(self, title: str, message: str, buttons: list = None, is_error: bool = False) -> None:
-        """Use the system default native messagebox for notifications."""
-        # Pad message to force a wider dialog on Windows
         width_pad = " " * 60
         padded_msg = f"{width_pad}\n{message}\n{width_pad}"
-        
-        # Play Windows alert sound
         try:
-            if is_error:
-                winsound.MessageBeep(winsound.MB_ICONHAND)
-            else:
-                winsound.MessageBeep(winsound.MB_ICONASTERISK)
-        except Exception:
-            pass
+            winsound.MessageBeep(winsound.MB_ICONHAND if is_error else winsound.MB_ICONASTERISK)
+        except Exception: pass
 
         if buttons and len(buttons) >= 2:
-            # Map native Yes/No to the first two button actions
             prompt = f"{padded_msg}\n\nDo you want to {buttons[0]['text']}?"
             if messagebox.askyesno(title, prompt, parent=self.root):
                 if buttons[0]["command"]: buttons[0]["command"]()
             else:
                 if buttons[1]["command"]: buttons[1]["command"]()
         else:
-            if is_error:
-                messagebox.showerror(title, padded_msg, parent=self.root)
-            else:
-                messagebox.showinfo(title, padded_msg, parent=self.root)
-
-    # ── Display ───────────────────────────────────────────────────────────────
-    def _format_time(self) -> str:
-        mins, secs = divmod(self.remaining_seconds, 60)
-        return f"{mins:02d}:{secs:02d}"
+            func = messagebox.showerror if is_error else messagebox.showinfo
+            func(title, padded_msg, parent=self.root)
 
     def _refresh_display(self) -> None:
-        self._lbl_time.config(text=self._format_time())
-        if self.is_focus_period:
-            status_text = f"FOCUS ({self.completed_sessions + 1})"
-        else:
-            status_text = "BREAK"
-        self._lbl_status.config(text=status_text, fg=BTN_COLOR)
+        mins, secs = divmod(self.engine.remaining_seconds, 60)
+        self._lbl_time.config(text=f"{mins:02d}:{secs:02d}")
+        status = f"FOCUS ({self.engine.completed_sessions + 1})" if self.engine.is_focus else "BREAK"
+        self._lbl_status.config(text=status)
         self._update_skip_visibility()
 
     def _update_skip_visibility(self) -> None:
-        """Toggle between Skip UI (active) and Idle UI (not started)."""
-        initial = (self.focus_min if self.is_focus_period else self.break_min) * 60
-        is_active = self.timer_running or self.remaining_seconds < initial
-        
+        initial = (self.settings.focus_min if self.engine.is_focus else self.settings.break_min) * 60
+        is_active = self.engine.running or self.engine.remaining_seconds < initial
         if is_active:
-            if self._lbl_idle.winfo_ismapped():
-                self._lbl_idle.pack_forget()
+            if self._lbl_idle.winfo_ismapped(): self._lbl_idle.pack_forget()
             if not self._btn_skip.winfo_ismapped():
                 self._skip_divider.pack(after=self._lbl_time, fill="x", pady=(10, 0))
                 self._btn_skip.pack(after=self._skip_divider, pady=(10, 10))
@@ -618,77 +678,17 @@ class PomodoroTimer:
                 self._skip_divider.pack_forget()
                 self._btn_skip.pack_forget()
             if not self._lbl_idle.winfo_ismapped():
-                idle_text = "Ready to focus?" if self.is_focus_period else "Take a breather"
-                self._lbl_idle.config(text=idle_text)
+                self._lbl_idle.config(text="Ready to focus?" if self.engine.is_focus else "Take a breather")
                 self._lbl_idle.pack(after=self._lbl_time, pady=(25, 0))
 
-    # ── Settings ──────────────────────────────────────────────────────────────
-    @property
-    def _config_path(self) -> str:
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_NAME)
-
-    def _load_settings(self) -> None:
-        data = {}
-        if os.path.exists(self._config_path):
-            try:
-                with open(self._config_path) as f:
-                    data = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
-        for key, default in DEFAULTS.items():
-            setattr(self, key, data.get(key, default))
-
-    def _save_settings(self) -> None:
-        payload = {k: getattr(self, k) for k in DEFAULTS}
-        try:
-            with open(self._config_path, "w") as f:
-                json.dump(payload, f, indent=4)
-        except OSError as e:
-            self._show_dialog("Save Error", str(e), is_error=True)
+    def _open_settings(self) -> None: SettingsWindow(self.root, self)
+    def _open_stats(self) -> None: StatsWindow(self.root, self.stats_mgr.stats)
 
     def apply_settings(self, **kwargs) -> None:
-        """Called by SettingsWindow after the user hits Save."""
-        for key, val in kwargs.items():
-            setattr(self, key, val)
-        self._save_settings()
-        if not self.timer_running:
-            self.remaining_seconds = self.focus_min * 60
-            self._initial_seconds  = self.remaining_seconds
+        self.settings.update(**kwargs)
+        if not self.engine.running:
+            self.engine.reset_to_focus()
         self._refresh_display()
-
-    def _open_settings(self) -> None:
-        SettingsWindow(self.root, self)
-
-    # ── Stats ─────────────────────────────────────────────────────────────────
-    @property
-    def _stats_path(self) -> str:
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), STATS_NAME)
-
-    def _load_stats(self) -> None:
-        self.stats = {}
-        if os.path.exists(self._stats_path):
-            try:
-                with open(self._stats_path, newline='') as f:
-                    reader = csv.reader(f)
-                    for row in reader:
-                        if len(row) == 2:
-                            self.stats[row[0]] = int(row[1])
-            except (OSError, ValueError):
-                pass
-
-    def _record_focus(self, seconds: int) -> None:
-        today = str(datetime.now().date())
-        self.stats[today] = self.stats.get(today, 0) + seconds
-        try:
-            with open(self._stats_path, "w", newline='') as f:
-                writer = csv.writer(f)
-                for date, secs in self.stats.items():
-                    writer.writerow([date, secs])
-        except OSError:
-            pass
-
-    def _open_stats(self) -> None:
-        StatsWindow(self.root, self.stats)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
