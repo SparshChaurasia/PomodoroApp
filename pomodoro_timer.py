@@ -2,10 +2,19 @@ import tkinter as tk
 from tkinter import messagebox
 import ctypes
 import os
+import sys
 import winsound
 import json
 import csv
 from datetime import datetime, timedelta
+
+def get_app_path(filename: str) -> str:
+    """Returns the absolute path to a file, suitable for both dev and PyInstaller EXE."""
+    if getattr(sys, 'frozen', False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, filename)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BG_COLOR    = "#333235"
@@ -35,7 +44,7 @@ DIALOG_HEIGHT = 300
 class SettingsManager:
     """Handles persistence of application configuration."""
     def __init__(self, filename: str):
-        self.path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        self.path = get_app_path(filename)
         self.data = DEFAULTS.copy()
         self.load()
 
@@ -72,7 +81,7 @@ class SettingsManager:
 class StatsManager:
     """Handles daily focus time tracking."""
     def __init__(self, filename: str):
-        self.path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        self.path = get_app_path(filename)
         self.stats = {}
         self.load()
 
@@ -249,61 +258,75 @@ class RoundedButton(tk.Canvas):
         self._rounded = rounded
         self._border_edges = border_edges
 
-        self._draw(self._color)
-        self.bind("<Button-1>",        lambda _: self._draw(self.PRESS_COLOR))
+        self._create_items()
+        self.bind("<Button-1>",        lambda _: self._update_ui(self.PRESS_COLOR))
         self.bind("<ButtonRelease-1>", lambda _: self._on_release())
-        self.bind("<Enter>",           lambda _: self._draw(self.HOVER_COLOR))
-        self.bind("<Leave>",           lambda _: self._draw(self._color))
+        self.bind("<Enter>",           lambda _: self._update_ui(self.HOVER_COLOR))
+        self.bind("<Leave>",           lambda _: self._update_ui(self._color))
 
-    def _draw(self, color: str) -> None:
-        self.delete("all")
+    def _create_items(self) -> None:
+        """Create all canvas elements once for efficient reuse."""
         w, h, r = self._btn_w, self._btn_h, self._radius
-        tl, tr, br, bl = self._rounded
-        bt, br_ed, bb, bl_ed = self._border_edges
+        top_left, top_right, bot_right, bot_left = self._rounded
+        border_top, border_right, border_bottom, border_left = self._border_edges
         outline_color = "#aaaaaa"
+        color = self._color
 
-        # 1. Fill
-        # vertical strip
-        self.create_rectangle(r, 0, w-r, h, fill=color, outline=color)
-        # horizontal strip
-        self.create_rectangle(0, r, w, h-r, fill=color, outline=color)
+        # Fill items (Tagged with 'fill')
+        self.create_rectangle(r, 0, w-r, h, fill=color, outline=color, tags="fill")
+        self.create_rectangle(0, r, w, h-r, fill=color, outline=color, tags="fill")
         
         # Corners Fill
-        if tl: self.create_oval(0, 0, r*2, r*2, fill=color, outline=color)
-        else:  self.create_rectangle(0, 0, r, r, fill=color, outline=color)
-        
-        if tr: self.create_oval(w-r*2, 0, w, r*2, fill=color, outline=color)
-        else:  self.create_rectangle(w-r, 0, w, r, fill=color, outline=color)
-        
-        if br: self.create_oval(w-r*2, h-r*2, w, h, fill=color, outline=color)
-        else:  self.create_rectangle(w-r, h-r, w, h, fill=color, outline=color)
-        
-        if bl: self.create_oval(0, h-r*2, r*2, h, fill=color, outline=color)
-        else:  self.create_rectangle(0, h-r, r, h, fill=color, outline=color)
+        corners = [
+            (top_left,  0,       0,       r*2,     r*2),
+            (top_right, w - r*2, 0,       w,       r*2),
+            (bot_right, w - r*2, h - r*2, w,       h),
+            (bot_left,  0,       h - r*2, r*2,     h)
+        ]
+        for is_rounded, x0, y0, x1, y1 in corners:
+            if is_rounded:
+                self.create_oval(x0, y0, x1, y1, fill=color, outline=color, tags="fill")
+            else:
+                # Square corner fill
+                sx0 = x0 if x1 <= r*2 else x1-r
+                sy0 = y0 if y1 <= r*2 else y1-r
+                self.create_rectangle(sx0, sy0, sx0+r, sy0+r, fill=color, outline=color, tags="fill")
 
-        # 2. Outline
-        if bt: self.create_line(r if tl else 0, 0, w-r if tr else w, 0, fill=outline_color)
-        if bb: self.create_line(r if bl else 0, h-1, w-r if br else w, h-1, fill=outline_color)
-        if bl_ed: self.create_line(0, r if tl else 0, 0, h-r if bl else h, fill=outline_color)
-        if br_ed: self.create_line(w-1, r if tr else 0, w-1, h-r if br else h, fill=outline_color)
+        # Outline items (Static - drawn once)
+        if border_top:    self.create_line(r if top_left else 0,  0, w - r if top_right else w, 0, fill=outline_color)
+        if border_bottom: self.create_line(r if bot_left else 0,  h - 1, w - r if bot_right else w, h - 1, fill=outline_color)
+        if border_left:   self.create_line(0, r if top_left else 0,  0, h - r if bot_left else h, fill=outline_color)
+        if border_right:  self.create_line(w - 1, r if top_right else 0, w - 1, h - r if bot_right else h, fill=outline_color)
 
-        if tl and bt and bl_ed: self.create_arc(0, 0, r*2, r*2, start=90, extent=90, outline=outline_color, style="arc")
-        if tr and bt and br_ed: self.create_arc(w-r*2, 0, w-1, r*2, start=0, extent=90, outline=outline_color, style="arc")
-        if br and bb and br_ed: self.create_arc(w-r*2, h-r*2, w-1, h-1, start=270, extent=90, outline=outline_color, style="arc")
-        if bl and bb and bl_ed: self.create_arc(0, h-r*2, r*2, h-1, start=180, extent=90, outline=outline_color, style="arc")
+        # Arcs for rounded corners
+        if top_left and border_top and border_left:
+            self.create_arc(0, 0, r*2, r*2, start=90, extent=90, outline=outline_color, style="arc")
+        if top_right and border_top and border_right:
+            self.create_arc(w-r*2, 0, w-1, r*2, start=0, extent=90, outline=outline_color, style="arc")
+        if bot_right and border_bottom and border_right:
+            self.create_arc(w-r*2, h-r*2, w-1, h-1, start=270, extent=90, outline=outline_color, style="arc")
+        if bot_left and border_bottom and border_left:
+            self.create_arc(0, h-r*2, r*2, h-1, start=180, extent=90, outline=outline_color, style="arc")
 
-        self.create_text(w/2, h/2, text=self._text, fill="white", font=self._font)
+        self._text_item = self.create_text(w/2, h/2, text=self._text, fill="white", font=self._font)
+
+    def _update_ui(self, color: str) -> None:
+        """Update existing item colors."""
+        self.itemconfig("fill", fill=color, outline=color)
 
     def _on_release(self) -> None:
-        self._draw(self._color)
+        self._update_ui(self._color)
         if self._command:
             self._command()
 
     def update(self, text: str = None, color: str = None) -> None:
-        """Update label text and/or background colour and redraw."""
-        if text  is not None: self._text  = text
-        if color is not None: self._color = color
-        self._draw(self._color)
+        """Update label text and/or color."""
+        if text:
+            self._text = text
+            self.itemconfig(self._text_item, text=text)
+        if color:
+            self._color = color
+            self._update_ui(color)
 
 
 # ── Generic Dialogs ────────────────────────────────────────────────────────────
