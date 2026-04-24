@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import messagebox
 import ctypes
 import os
+import winsound
 import json
 import csv
 from datetime import datetime, timedelta
@@ -65,7 +66,7 @@ def draw_rounded_window_bg(canvas: tk.Canvas, w: int, h: int, r: int, fill: str,
     canvas.create_rectangle(r, 0, w-r, h, fill=fill, outline=fill)
     canvas.create_rectangle(0, r, w, h-r, fill=fill, outline=fill)
     
-    # Border (1px White)
+    # Border
     canvas.create_arc(0, 0, 2*r, 2*r, start=90, extent=90, outline=outline, style="arc")
     canvas.create_arc(w-2*r, 0, w-1, 2*r, start=0, extent=90, outline=outline, style="arc")
     canvas.create_arc(w-2*r, h-2*r, w-1, h-1, start=270, extent=90, outline=outline, style="arc")
@@ -95,6 +96,8 @@ class RoundedButton(tk.Canvas):
         color: str = BTN_COLOR,
         bg: str = BG_COLOR,
         font=FONT_BTN,
+        rounded: tuple = (True, True, True, True), # (tl, tr, br, bl)
+        border_edges: tuple = (False, False, False, False) # (top, right, bottom, left)
     ):
         super().__init__(parent, width=width, height=height, bg=bg,
                          highlightthickness=0, bd=0)
@@ -105,7 +108,8 @@ class RoundedButton(tk.Canvas):
         self._font    = font
         self._btn_w = width
         self._btn_h = height
-
+        self._rounded = rounded
+        self._border_edges = border_edges
 
         self._draw(self._color)
         self.bind("<Button-1>",        lambda _: self._draw(self.PRESS_COLOR))
@@ -116,15 +120,40 @@ class RoundedButton(tk.Canvas):
     def _draw(self, color: str) -> None:
         self.delete("all")
         w, h, r = self._btn_w, self._btn_h, self._radius
+        tl, tr, br, bl = self._rounded
+        bt, br_ed, bb, bl_ed = self._border_edges
+        outline_color = "#aaaaaa"
 
-        # Rounded rect via four corner ovals + two fill rectangles
-        for x0, y0, x1, y1 in [
-            (0, 0, r*2, r*2), (w-r*2, 0, w, r*2),
-            (0, h-r*2, r*2, h), (w-r*2, h-r*2, w, h),
-        ]:
-            self.create_oval(x0, y0, x1, y1, fill=color, outline=color)
+        # 1. Fill
+        # vertical strip
         self.create_rectangle(r, 0, w-r, h, fill=color, outline=color)
+        # horizontal strip
         self.create_rectangle(0, r, w, h-r, fill=color, outline=color)
+        
+        # Corners Fill
+        if tl: self.create_oval(0, 0, r*2, r*2, fill=color, outline=color)
+        else:  self.create_rectangle(0, 0, r, r, fill=color, outline=color)
+        
+        if tr: self.create_oval(w-r*2, 0, w, r*2, fill=color, outline=color)
+        else:  self.create_rectangle(w-r, 0, w, r, fill=color, outline=color)
+        
+        if br: self.create_oval(w-r*2, h-r*2, w, h, fill=color, outline=color)
+        else:  self.create_rectangle(w-r, h-r, w, h, fill=color, outline=color)
+        
+        if bl: self.create_oval(0, h-r*2, r*2, h, fill=color, outline=color)
+        else:  self.create_rectangle(0, h-r, r, h, fill=color, outline=color)
+
+        # 2. Outline
+        if bt: self.create_line(r if tl else 0, 0, w-r if tr else w, 0, fill=outline_color)
+        if bb: self.create_line(r if bl else 0, h-1, w-r if br else w, h-1, fill=outline_color)
+        if bl_ed: self.create_line(0, r if tl else 0, 0, h-r if bl else h, fill=outline_color)
+        if br_ed: self.create_line(w-1, r if tr else 0, w-1, h-r if br else h, fill=outline_color)
+
+        if tl and bt and bl_ed: self.create_arc(0, 0, r*2, r*2, start=90, extent=90, outline=outline_color, style="arc")
+        if tr and bt and br_ed: self.create_arc(w-r*2, 0, w-1, r*2, start=0, extent=90, outline=outline_color, style="arc")
+        if br and bb and br_ed: self.create_arc(w-r*2, h-r*2, w-1, h-1, start=270, extent=90, outline=outline_color, style="arc")
+        if bl and bb and bl_ed: self.create_arc(0, h-r*2, r*2, h-1, start=180, extent=90, outline=outline_color, style="arc")
+
         self.create_text(w/2, h/2, text=self._text, fill="white", font=self._font)
 
     def _on_release(self) -> None:
@@ -292,7 +321,7 @@ class PomodoroTimer:
     # ── Window setup ──────────────────────────────────────────────────────────
     def _configure_window(self) -> None:
         self.root.title("Pomodoro")
-        w, h = 220, 200
+        w, h = 220, 230
         self.root.geometry(f"{w}x{h}")
         self.root.overrideredirect(True)
         self.root.wm_attributes("-topmost", True)
@@ -350,19 +379,63 @@ class PomodoroTimer:
             command=self.root.quit, bg=BG_COLOR, fg="white", bd=0,
         ).place(x=195, y=8)
 
+        # Status Label (Center)
+        self._lbl_status = tk.Label(
+            self.root, text="FOCUS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR
+        )
+        self._lbl_status.place(x=110, y=18, anchor="center")
+
+        # Horizontal divider
+        tk.Frame(self.root, height=1, bg="#444444").pack(fill="x", padx=0, pady=(35, 0))
+
         self._lbl_time = tk.Label(
             self.root, text=self._format_time(),
             font=FONT_MAIN, fg="white", bg=BG_COLOR,
         )
-        self._lbl_time.pack(pady=(40, 20))
+        self._lbl_time.pack(pady=(10, 0))
 
-        frame = tk.Frame(self.root, bg=BG_COLOR)
-        frame.pack(fill="x", padx=10, pady=10)
+        # Small skip button (hidden by default)
+        self._btn_skip = RoundedButton(
+            self.root, text="⏭ Skip", command=self.skip_current_period,
+            width=70, height=22, radius=6, font=("Fira Code", 9, "bold"),
+            color=BG_COLOR
+        )
+        self._skip_divider = tk.Frame(self.root, height=1, bg="#444444")
 
-        self._btn_toggle = RoundedButton(frame, text="▶ Start", command=self.toggle_timer, width=96)
-        self._btn_toggle.pack(side="left", expand=True, padx=2)
+        # Idle status label to fill space when not running
+        self._lbl_idle = tk.Label(
+            self.root, text="Ready to focus?", font=("Fira Code", 10, "italic"),
+            fg="#777777", bg=BG_COLOR
+        )
+        self._lbl_idle.pack(pady=(20, 0))
 
-        RoundedButton(frame, text="🔄 Reset", command=self.reset_timer, width=96).pack(side="left", expand=True, padx=2)
+        # Horizontal divider above bottom buttons
+        tk.Frame(self.root, height=1, bg="#444444").pack(side="bottom", fill="x")
+
+        # Use the transparent color for the frame to respect window rounding
+        self._btn_frame = tk.Frame(self.root, bg="#000001", height=45)
+        self._btn_frame.pack(side="bottom", fill="x")
+        self._btn_frame.pack_propagate(False)
+
+        bw = 110
+        bh = 45
+        br = 12 # Match window radius
+
+        self._btn_toggle = RoundedButton(
+            self._btn_frame, text="▶ Start", command=self.toggle_timer,
+            width=bw, height=bh, radius=br, bg="#000001",
+            rounded=(False, False, False, True), # Only bottom-left rounded
+            border_edges=(True, True, True, True) # Show outer borders
+        )
+        self._btn_toggle.pack(side="left")
+
+        self._btn_reset = RoundedButton(
+            self._btn_frame, text="🔄 Reset", command=self.reset_timer,
+            width=bw, height=bh, radius=br, bg="#000001",
+            rounded=(False, False, True, False), # Only bottom-right rounded
+            border_edges=(True, True, True, False) # Show outer borders, skip left
+        )
+        self._btn_reset.pack(side="left")
 
     # ── Timer control ─────────────────────────────────────────────────────────
     def toggle_timer(self) -> None:
@@ -386,6 +459,7 @@ class PomodoroTimer:
     def reset_timer(self) -> None:
         self._save_session_progress()
         self._stop()
+        self.completed_sessions = 0
         self.remaining_seconds = self.focus_min * 60
         self._initial_seconds  = self.remaining_seconds
         self.is_focus_period   = True
@@ -418,7 +492,7 @@ class PomodoroTimer:
             self._handle_break_end()
         self._refresh_display()
 
-    def _handle_focus_end(self) -> None:
+    def _handle_focus_end(self, silent: bool = False) -> None:
         self.completed_sessions += 1
 
         focus_increased = False
@@ -439,6 +513,10 @@ class PomodoroTimer:
         self.remaining_seconds  = self.break_min * 60
         self._initial_seconds   = self.remaining_seconds
         
+        if silent:
+            self._start()
+            return
+
         msg = "\n".join(info_lines + ["Session complete!", f"Take a {self.break_min} min break."])
         
         buttons = [
@@ -447,11 +525,15 @@ class PomodoroTimer:
         ]
         self._show_dialog("Break Time", msg, buttons=buttons)
 
-    def _handle_break_end(self) -> None:
+    def _handle_break_end(self, silent: bool = False) -> None:
         self.is_focus_period   = True
         self.remaining_seconds = self.focus_min * 60
         self._initial_seconds  = self.remaining_seconds
         
+        if silent:
+            self._start()
+            return
+
         buttons = [
             {"text": "Start Focus", "command": self._start},
             {"text": "End Session", "command": self.reset_timer}
@@ -466,20 +548,45 @@ class PomodoroTimer:
         self._refresh_display()
         self._start()
 
+    def skip_current_period(self) -> None:
+        """Skip the active focus or break period without showing a dialog."""
+        initial = (self.focus_min if self.is_focus_period else self.break_min) * 60
+        if self.timer_running or self.remaining_seconds < initial:
+            self._save_session_progress()
+            self._stop()
+            if self.is_focus_period:
+                self._handle_focus_end(silent=True)
+            else:
+                self._handle_break_end(silent=True)
+            self._refresh_display()
+
     def _show_dialog(self, title: str, message: str, buttons: list = None, is_error: bool = False) -> None:
         """Use the system default native messagebox for notifications."""
+        # Pad message to force a wider dialog on Windows
+        width_pad = " " * 60
+        padded_msg = f"{width_pad}\n{message}\n{width_pad}"
+        
+        # Play Windows alert sound
+        try:
+            if is_error:
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+            else:
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:
+            pass
+
         if buttons and len(buttons) >= 2:
             # Map native Yes/No to the first two button actions
-            prompt = f"{message}\n\nDo you want to {buttons[0]['text']}?"
+            prompt = f"{padded_msg}\n\nDo you want to {buttons[0]['text']}?"
             if messagebox.askyesno(title, prompt, parent=self.root):
                 if buttons[0]["command"]: buttons[0]["command"]()
             else:
                 if buttons[1]["command"]: buttons[1]["command"]()
         else:
             if is_error:
-                messagebox.showerror(title, message, parent=self.root)
+                messagebox.showerror(title, padded_msg, parent=self.root)
             else:
-                messagebox.showinfo(title, message, parent=self.root)
+                messagebox.showinfo(title, padded_msg, parent=self.root)
 
     # ── Display ───────────────────────────────────────────────────────────────
     def _format_time(self) -> str:
@@ -488,6 +595,32 @@ class PomodoroTimer:
 
     def _refresh_display(self) -> None:
         self._lbl_time.config(text=self._format_time())
+        if self.is_focus_period:
+            status_text = f"FOCUS ({self.completed_sessions + 1})"
+        else:
+            status_text = "BREAK"
+        self._lbl_status.config(text=status_text, fg=BTN_COLOR)
+        self._update_skip_visibility()
+
+    def _update_skip_visibility(self) -> None:
+        """Toggle between Skip UI (active) and Idle UI (not started)."""
+        initial = (self.focus_min if self.is_focus_period else self.break_min) * 60
+        is_active = self.timer_running or self.remaining_seconds < initial
+        
+        if is_active:
+            if self._lbl_idle.winfo_ismapped():
+                self._lbl_idle.pack_forget()
+            if not self._btn_skip.winfo_ismapped():
+                self._skip_divider.pack(after=self._lbl_time, fill="x", pady=(10, 0))
+                self._btn_skip.pack(after=self._skip_divider, pady=(10, 10))
+        else:
+            if self._btn_skip.winfo_ismapped():
+                self._skip_divider.pack_forget()
+                self._btn_skip.pack_forget()
+            if not self._lbl_idle.winfo_ismapped():
+                idle_text = "Ready to focus?" if self.is_focus_period else "Take a breather"
+                self._lbl_idle.config(text=idle_text)
+                self._lbl_idle.pack(after=self._lbl_time, pady=(25, 0))
 
     # ── Settings ──────────────────────────────────────────────────────────────
     @property
