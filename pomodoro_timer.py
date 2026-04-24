@@ -351,10 +351,10 @@ class PomodoroTimer:
         frame = tk.Frame(self.root, bg=BG_COLOR)
         frame.pack(fill="x", padx=10, pady=10)
 
-        self._btn_toggle = RoundedButton(frame, text="▶️Start", command=self.toggle_timer, width=96)
+        self._btn_toggle = RoundedButton(frame, text="▶ Start", command=self.toggle_timer, width=96)
         self._btn_toggle.pack(side="left", expand=True, padx=2)
 
-        RoundedButton(frame, text="🔄Reset", command=self.reset_timer, width=96).pack(side="left", expand=True, padx=2)
+        RoundedButton(frame, text="🔄 Reset", command=self.reset_timer, width=96).pack(side="left", expand=True, padx=2)
 
     # ── Timer control ─────────────────────────────────────────────────────────
     def toggle_timer(self) -> None:
@@ -365,12 +365,12 @@ class PomodoroTimer:
 
     def _start(self) -> None:
         self.timer_running = True
-        self._btn_toggle.update(text="⏸️Pause")
+        self._btn_toggle.update(text="⏸️ Pause")
         self._tick()
 
     def _stop(self) -> None:
         self.timer_running = False
-        self._btn_toggle.update(text="▶️Start")
+        self._btn_toggle.update(text="▶ Start")
         if self._timer_id:
             self.root.after_cancel(self._timer_id)
             self._timer_id = None
