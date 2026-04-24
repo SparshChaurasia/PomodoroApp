@@ -54,6 +54,29 @@ def compute_break(focus_min: int) -> int:
     return 15
 
 
+def draw_rounded_window_bg(canvas: tk.Canvas, w: int, h: int, r: int, fill: str, outline: str) -> None:
+    """Draw a rounded rectangle with a border on a canvas."""
+    canvas.delete("all")
+    # Fill corners and body
+    canvas.create_oval(0, 0, 2*r, 2*r, fill=fill, outline=fill)
+    canvas.create_oval(w-2*r, 0, w, 2*r, fill=fill, outline=fill)
+    canvas.create_oval(0, h-2*r, 2*r, h, fill=fill, outline=fill)
+    canvas.create_oval(w-2*r, h-2*r, w, h, fill=fill, outline=fill)
+    canvas.create_rectangle(r, 0, w-r, h, fill=fill, outline=fill)
+    canvas.create_rectangle(0, r, w, h-r, fill=fill, outline=fill)
+    
+    # Border (1px White)
+    canvas.create_arc(0, 0, 2*r, 2*r, start=90, extent=90, outline=outline, style="arc")
+    canvas.create_arc(w-2*r, 0, w-1, 2*r, start=0, extent=90, outline=outline, style="arc")
+    canvas.create_arc(w-2*r, h-2*r, w-1, h-1, start=270, extent=90, outline=outline, style="arc")
+    canvas.create_arc(0, h-2*r, 2*r, h-1, start=180, extent=90, outline=outline, style="arc")
+    
+    canvas.create_line(r, 0, w-r, 0, fill=outline)
+    canvas.create_line(r, h-1, w-r, h-1, fill=outline)
+    canvas.create_line(0, r, 0, h-r, fill=outline)
+    canvas.create_line(w-1, r, w-1, h-r, fill=outline)
+
+
 # ── Widgets ────────────────────────────────────────────────────────────────────
 class RoundedButton(tk.Canvas):
     """A canvas-based button with rounded corners and hover/press effects."""
@@ -118,13 +141,24 @@ class RoundedButton(tk.Canvas):
 
 # ── Generic Dialogs ────────────────────────────────────────────────────────────
 class DraggableWindow(tk.Toplevel):
-    """Base class for frameless, draggable windows."""
+    """Base class for frameless, draggable windows with rounded corners."""
     def __init__(self, parent, width: int, height: int):
         super().__init__(parent)
         self.overrideredirect(True)
         self.geometry(f"{width}x{height}")
-        self.configure(bg=BG_COLOR)
         self.wm_attributes("-topmost", True)
+
+        # Rounded corners setup
+        self.config(bg="#000001")
+        self.wm_attributes("-transparentcolor", "#000001")
+
+        self.bg_canvas = tk.Canvas(self, width=width, height=height, bg="#000001", highlightthickness=0)
+        self.bg_canvas.place(x=0, y=0)
+        draw_rounded_window_bg(self.bg_canvas, width, height, 12, BG_COLOR, "#aaaaaa")
+
+        # Bindings for dragging
+        self.bg_canvas.bind("<Button-1>", self._drag_start)
+        self.bg_canvas.bind("<B1-Motion>", self._drag_move)
         self.bind("<Button-1>", self._drag_start)
         self.bind("<B1-Motion>", self._drag_move)
 
@@ -135,45 +169,6 @@ class DraggableWindow(tk.Toplevel):
         x = self.winfo_x() + (event.x - self._drag_x)
         y = self.winfo_y() + (event.y - self._drag_y)
         self.geometry(f"+{x}+{y}")
-
-
-class MessageWindow(DraggableWindow):
-    """A frameless, draggable Toplevel for showing notifications."""
-
-    def __init__(self, parent, title: str, message: str, buttons: list = None, is_error: bool = False):
-        super().__init__(parent, DIALOG_WIDTH, DIALOG_HEIGHT)
-        
-        # UI
-        tk.Button(
-            self, text="❌", font=FONT_CLOSE,
-            command=self.destroy, bg=BG_COLOR, fg="white", bd=0,
-        ).place(x=DIALOG_WIDTH - 25, y=10)
-
-        tk.Label(self, text=title, font=FONT_BTN, fg=BTN_COLOR if not is_error else "#ff4c4c", bg=BG_COLOR).pack(pady=(40, 10))
-        tk.Label(self, text=message, font=FONT_LABEL, fg="white", bg=BG_COLOR, wraplength=220, justify="center").pack(pady=20, expand=True)
-        
-        btn_frame = tk.Frame(self, bg=BG_COLOR)
-        btn_frame.pack(pady=(0, 30))
-
-        if not buttons:
-            buttons = [{"text": "OK", "command": None}]
-
-        # Calculate width based on number of buttons
-        num_btns = len(buttons)
-        padding = 10
-        spacing = 5
-        usable_w = DIALOG_WIDTH - (padding * 2)
-        btn_w = int((usable_w - (spacing * (num_btns - 1))) / num_btns)
-
-        for btn_data in buttons:
-            cmd = btn_data.get("command")
-            text = btn_data.get("text")
-            
-            # Use a closure to capture cmd properly
-            def make_handler(c):
-                return lambda: (self.destroy(), c() if c else None)
-
-            RoundedButton(btn_frame, text=text, command=make_handler(cmd), width=btn_w).pack(side="left", padx=spacing/2)
 
 
 # ── Settings window ────────────────────────────────────────────────────────────
@@ -228,7 +223,7 @@ class SettingsWindow(DraggableWindow):
             )
             self.destroy()
         except ValueError:
-            MessageWindow(self, "Error", "Please enter a valid number!", is_error=True)
+            messagebox.showerror("Error", "Please enter a valid number!", parent=self)
 
 
 # ── Stats window ───────────────────────────────────────────────────────────────
@@ -297,11 +292,24 @@ class PomodoroTimer:
     # ── Window setup ──────────────────────────────────────────────────────────
     def _configure_window(self) -> None:
         self.root.title("Pomodoro")
-        self.root.geometry("220x200")
-        self.root.configure(bg=BG_COLOR)
+        w, h = 220, 200
+        self.root.geometry(f"{w}x{h}")
         self.root.overrideredirect(True)
         self.root.wm_attributes("-topmost", True)
+
+        # Rounded corners setup
+        self.root.config(bg="#000001")
+        self.root.wm_attributes("-transparentcolor", "#000001")
+
+        self.bg_canvas = tk.Canvas(self.root, width=w, height=h, bg="#000001", highlightthickness=0)
+        self.bg_canvas.place(x=0, y=0)
+        draw_rounded_window_bg(self.bg_canvas, w, h, 12, BG_COLOR, "#aaaaaa")
+
         show_in_taskbar(self.root)
+        
+        # Bindings for dragging
+        self.bg_canvas.bind("<Button-1>", self._drag_start)
+        self.bg_canvas.bind("<B1-Motion>", self._drag_move)
         self.root.bind("<Button-1>",  self._drag_start)
         self.root.bind("<B1-Motion>", self._drag_move)
 
@@ -459,7 +467,19 @@ class PomodoroTimer:
         self._start()
 
     def _show_dialog(self, title: str, message: str, buttons: list = None, is_error: bool = False) -> None:
-        MessageWindow(self.root, title, message, buttons=buttons, is_error=is_error)
+        """Use the system default native messagebox for notifications."""
+        if buttons and len(buttons) >= 2:
+            # Map native Yes/No to the first two button actions
+            prompt = f"{message}\n\nDo you want to {buttons[0]['text']}?"
+            if messagebox.askyesno(title, prompt, parent=self.root):
+                if buttons[0]["command"]: buttons[0]["command"]()
+            else:
+                if buttons[1]["command"]: buttons[1]["command"]()
+        else:
+            if is_error:
+                messagebox.showerror(title, message, parent=self.root)
+            else:
+                messagebox.showinfo(title, message, parent=self.root)
 
     # ── Display ───────────────────────────────────────────────────────────────
     def _format_time(self) -> str:
