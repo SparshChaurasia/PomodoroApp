@@ -1,5 +1,5 @@
 {
-    "focus_min": 20,
+    "focus_min": 10,
     "break_min": 5,
     "break_auto": true,
     "auto_inc_val": 5,
