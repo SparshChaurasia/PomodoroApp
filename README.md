@@ -50,7 +50,7 @@ The application is fully optimized for portability. To create a single-file exec
 1. Install PyInstaller: `pip install pyinstaller`
 2. Run the build script:
    ```bash
-   pyinstaller --noconsole --onefile --name "PomodoroTimer" --add-data "config.json;." --add-data "stats.csv;." main.py
+   PyInstaller --noconsole --onefile --name "PomodoroTimer" --add-data "config.json;." --add-data "stats.csv;." main.py
    ```
 
 ---
