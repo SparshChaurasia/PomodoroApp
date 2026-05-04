@@ -6,6 +6,7 @@ import sys
 import winsound
 import json
 import csv
+import math
 from datetime import datetime, timedelta
 
 def get_app_path(filename: str) -> str:
@@ -36,8 +37,12 @@ DEFAULTS = {
 }
 
 # ── UI Constants ───────────────────────────────────────────────────────────────
-DIALOG_WIDTH  = 260
-DIALOG_HEIGHT = 300
+DIALOG_WIDTH  = 270
+DIALOG_HEIGHT = 310
+WIN_W, WIN_H  = 220, 240
+TITLE_H       = 36
+DIVIDER_COLOR = "#3e3c40"
+OUTLINE_COLOR = "#555558"
 
 # ── Business Logic & Data Managers (SOLID) ───────────────────────────────────
 
@@ -195,9 +200,11 @@ def show_in_taskbar(root: tk.Tk) -> None:
 
 def compute_break(focus_min: int) -> int:
     """Return the appropriate break length based on focus duration."""
-    if focus_min < 30:
+    if focus_min <= 10:
+        return 2
+    if focus_min <= 20:
         return 5
-    if focus_min <= 60:
+    if focus_min < 60:
         return 10
     return 15
 
@@ -214,10 +221,10 @@ def draw_rounded_window_bg(canvas: tk.Canvas, w: int, h: int, r: int, fill: str,
     canvas.create_rectangle(0, r, w, h-r, fill=fill, outline=fill)
     
     # Border
-    canvas.create_arc(0, 0, 2*r, 2*r, start=90, extent=90, outline=outline, style="arc")
-    canvas.create_arc(w-2*r, 0, w-1, 2*r, start=0, extent=90, outline=outline, style="arc")
+    canvas.create_arc(0, 0, 2*r-1, 2*r-1, start=90, extent=90, outline=outline, style="arc")
+    canvas.create_arc(w-2*r, 0, w-1, 2*r-1, start=0, extent=90, outline=outline, style="arc")
     canvas.create_arc(w-2*r, h-2*r, w-1, h-1, start=270, extent=90, outline=outline, style="arc")
-    canvas.create_arc(0, h-2*r, 2*r, h-1, start=180, extent=90, outline=outline, style="arc")
+    canvas.create_arc(0, h-2*r, 2*r-1, h-1, start=180, extent=90, outline=outline, style="arc")
     
     canvas.create_line(r, 0, w-r, 0, fill=outline)
     canvas.create_line(r, h-1, w-r, h-1, fill=outline)
@@ -269,7 +276,7 @@ class RoundedButton(tk.Canvas):
         w, h, r = self._btn_w, self._btn_h, self._radius
         top_left, top_right, bot_right, bot_left = self._rounded
         border_top, border_right, border_bottom, border_left = self._border_edges
-        outline_color = "#aaaaaa"
+        outline_color = OUTLINE_COLOR
         color = self._color
 
         # Fill items (Tagged with 'fill')
@@ -300,13 +307,13 @@ class RoundedButton(tk.Canvas):
 
         # Arcs for rounded corners
         if top_left and border_top and border_left:
-            self.create_arc(0, 0, r*2, r*2, start=90, extent=90, outline=outline_color, style="arc")
+            self.create_arc(0, 0, r*2-1, r*2-1, start=90, extent=90, outline=outline_color, style="arc")
         if top_right and border_top and border_right:
-            self.create_arc(w-r*2, 0, w-1, r*2, start=0, extent=90, outline=outline_color, style="arc")
+            self.create_arc(w-r*2, 0, w-1, r*2-1, start=0, extent=90, outline=outline_color, style="arc")
         if bot_right and border_bottom and border_right:
             self.create_arc(w-r*2, h-r*2, w-1, h-1, start=270, extent=90, outline=outline_color, style="arc")
         if bot_left and border_bottom and border_left:
-            self.create_arc(0, h-r*2, r*2, h-1, start=180, extent=90, outline=outline_color, style="arc")
+            self.create_arc(0, h-r*2, r*2-1, h-1, start=180, extent=90, outline=outline_color, style="arc")
 
         self._text_item = self.create_text(w/2, h/2, text=self._text, fill="white", font=self._font)
 
@@ -377,11 +384,13 @@ class SettingsWindow(DraggableWindow):
         tk.Label(self, text="SETTINGS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR
                  ).place(x=DIALOG_WIDTH//2, y=18, anchor="center")
         
-        tk.Button(self, text="❌", font=FONT_CLOSE, command=self.destroy, bg=BG_COLOR, fg="white", bd=0
-                  ).place(x=DIALOG_WIDTH - 20, y=18, anchor="center")
+        tk.Button(self, text="×", font=("Segoe UI", 12), command=self.destroy,
+                  bg=BG_COLOR, fg="#888888", bd=0, activebackground=BG_COLOR,
+                  activeforeground="#ff5f57", cursor="hand2", padx=0, pady=0
+                  ).place(x=DIALOG_WIDTH - 18, y=18, anchor="center")
 
         # Top horizontal divider
-        tk.Frame(self, height=1, bg="#444444").pack(fill="x", padx=0, pady=(35, 0))
+        tk.Frame(self, height=1, bg=DIVIDER_COLOR).pack(fill="x", padx=0, pady=(35, 0))
 
         # Rows with 10px top padding for the first element to match timer spacing
         self._f  = self._make_row("Focus", t.settings.focus_min, first=True)
@@ -432,7 +441,7 @@ class SettingsWindow(DraggableWindow):
         try:
             self._timer.apply_settings(
                 focus_min    = int(self._f.get()),
-                break_min    = int(self._b.get()) if not self._break_auto_var.get() else self._timer.settings.break_min,
+                break_min    = int(self._b.get()) if not self._break_auto_var.get() else compute_break(int(self._f.get())),
                 break_auto   = self._break_auto_var.get(),
                 auto_inc_val = int(self._a.get()),
                 inc_threshold= int(self._th.get()),
@@ -457,11 +466,13 @@ class StatsWindow(DraggableWindow):
         tk.Label(self, text="STATS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR
                  ).place(x=DIALOG_WIDTH//2, y=18, anchor="center")
         
-        tk.Button(self, text="❌", font=FONT_CLOSE, command=self.destroy, bg=BG_COLOR, fg="white", bd=0
-                  ).place(x=DIALOG_WIDTH - 20, y=18, anchor="center")
+        tk.Button(self, text="×", font=("Segoe UI", 12), command=self.destroy,
+                  bg=BG_COLOR, fg="#888888", bd=0, activebackground=BG_COLOR,
+                  activeforeground="#ff5f57", cursor="hand2", padx=0, pady=0
+                  ).place(x=DIALOG_WIDTH - 18, y=18, anchor="center")
 
         # Top horizontal divider
-        tk.Frame(self, height=1, bg="#444444").pack(fill="x", padx=0, pady=(35, 0))
+        tk.Frame(self, height=1, bg=DIVIDER_COLOR).pack(fill="x", padx=0, pady=(35, 0))
 
         # Container for bars
         container = tk.Frame(self, bg=BG_COLOR)
@@ -506,6 +517,7 @@ class PomodoroTimer:
         self.settings = SettingsManager(CONFIG_NAME)
         self.stats_mgr = StatsManager(STATS_NAME)
         self.engine = TimerEngine(self.settings, on_tick=self._refresh_display, on_end=self._on_period_end)
+        self._is_mini = False
 
         self._configure_window()
         self._build_ui()
@@ -513,7 +525,7 @@ class PomodoroTimer:
 
     def _configure_window(self) -> None:
         self.root.title("Pomodoro")
-        w, h = 220, 230
+        w, h = WIN_W, WIN_H
         self.root.geometry(f"{w}x{h}")
         self.root.overrideredirect(True)
         self.root.wm_attributes("-topmost", True)
@@ -523,9 +535,9 @@ class PomodoroTimer:
 
         self.bg_canvas = tk.Canvas(self.root, width=w, height=h, bg="#000001", highlightthickness=0)
         self.bg_canvas.place(x=0, y=0)
-        draw_rounded_window_bg(self.bg_canvas, w, h, 12, BG_COLOR, "#aaaaaa")
+        draw_rounded_window_bg(self.bg_canvas, w, h, 12, BG_COLOR, OUTLINE_COLOR)
 
-        show_in_taskbar(self.root)
+        self.root.after(50, lambda: show_in_taskbar(self.root))
         self.bg_canvas.bind("<Button-1>", self._drag_start)
         self.bg_canvas.bind("<B1-Motion>", self._drag_move)
 
@@ -538,42 +550,69 @@ class PomodoroTimer:
         self.root.geometry(f"+{x}+{y}")
 
     def _build_ui(self) -> None:
-        # Adjusted Y to 18 and added anchor="center" for all top bar items to ensure perfect middle alignment
-        tk.Button(self.root, text="⚙️", font=FONT_CLOSE, command=self._open_settings, bg=BG_COLOR, fg="white", bd=0
-                  ).place(x=15, y=18, anchor="center")
-        tk.Button(self.root, text="📊", font=FONT_CLOSE, command=self._open_stats, bg=BG_COLOR, fg="white", bd=0
-                  ).place(x=40, y=18, anchor="center")
-        tk.Button(self.root, text="❌", font=FONT_CLOSE, command=self.root.quit, bg=BG_COLOR, fg="white", bd=0
-                  ).place(x=206, y=18, anchor="center")
+        for child in self.root.winfo_children():
+            if child != self.bg_canvas:
+                child.destroy()
 
+        _btn = dict(bg=BG_COLOR, bd=0, activebackground=BG_COLOR, cursor="hand2")
+
+        # Left icons
+        tk.Button(self.root, text="⚙", font=("Segoe UI Symbol", 10), fg="#888", activeforeground="white",
+                  command=self._open_settings, **_btn).place(x=15, y=18, anchor="center")
+        tk.Button(self.root, text="▦", font=("Segoe UI Symbol", 10), fg="#888", activeforeground="white",
+                  command=self._open_stats, **_btn).place(x=40, y=18, anchor="center")
+
+        # Right window controls
+        tk.Button(self.root, text="─", font=("Segoe UI", 10), fg="#888", activeforeground="white",
+                  command=self._toggle_mini_mode, padx=0, pady=0, **_btn).place(x=178, y=18, anchor="center")
+        tk.Button(self.root, text="×", font=("Segoe UI", 12), fg="#888", activeforeground="#ff5f57",
+                  command=self.root.quit, padx=0, pady=0, **_btn).place(x=204, y=18, anchor="center")
+
+        # Status label (centred)
         self._lbl_status = tk.Label(self.root, text="FOCUS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR)
-        self._lbl_status.place(x=110, y=18, anchor="center")
+        self._lbl_status.place(x=WIN_W // 2, y=18, anchor="center")
 
-        tk.Frame(self.root, height=1, bg="#444444").pack(fill="x", padx=0, pady=(35, 0))
+        # Drag strip — placed BELOW buttons via .lower() so buttons still get clicks
+        drag_strip = tk.Frame(self.root, bg=BG_COLOR, cursor="fleur")
+        drag_strip.place(x=0, y=0, width=WIN_W, height=TITLE_H)
+        drag_strip.bind("<Button-1>",  self._drag_start)
+        drag_strip.bind("<B1-Motion>", self._drag_move)
+        drag_strip.lower()
 
+        # Divider below title bar
+        tk.Frame(self.root, height=1, bg=DIVIDER_COLOR).pack(fill="x", padx=0, pady=(TITLE_H, 0))
+
+        # Timer display
         self._lbl_time = tk.Label(self.root, text="00:00", font=FONT_MAIN, fg="white", bg=BG_COLOR)
-        self._lbl_time.pack(pady=(10, 0))
+        self._lbl_time.pack(pady=(8, 0))
 
-        self._btn_skip = RoundedButton(self.root, text="⏭ Skip", command=self.skip_current_period,
-                                       width=70, height=22, radius=6, font=("Fira Code", 9, "bold"), color=BG_COLOR)
-        self._skip_divider = tk.Frame(self.root, height=1, bg="#444444")
+        # Skip button + divider (hidden until active)
+        self._btn_skip = RoundedButton(self.root, text="⏭  Skip", command=self.skip_current_period,
+                                       width=78, height=24, radius=6, font=("Segoe UI", 8, "bold"),
+                                       color="#444345")
+        self._skip_divider = tk.Frame(self.root, height=1, bg=DIVIDER_COLOR)
 
-        self._lbl_idle = tk.Label(self.root, text="", font=("Fira Code", 10, "italic"), fg="#777777", bg=BG_COLOR)
-        
-        tk.Frame(self.root, height=1, bg="#444444").pack(side="bottom", fill="x")
-        self._btn_frame = tk.Frame(self.root, bg="#000001", height=45)
+        # Idle hint label
+        self._lbl_idle = tk.Label(self.root, text="", font=("Fira Code", 9, "italic"),
+                                  fg="#606060", bg=BG_COLOR)
+
+        # Bottom action buttons
+        self._btn_frame = tk.Frame(self.root, bg="#000001", height=46)
         self._btn_frame.pack(side="bottom", fill="x")
         self._btn_frame.pack_propagate(False)
 
-        bw, bh, br = 110, 45, 12
-        self._btn_toggle = RoundedButton(self._btn_frame, text="▶ Start", command=self.toggle_timer,
+        bw, bh, br = WIN_W // 2, 46, 12
+        toggle_text = "⏸  Pause" if self.engine.running else "▶  Start"
+        self._btn_toggle = RoundedButton(self._btn_frame, text=toggle_text, command=self.toggle_timer,
                                          width=bw, height=bh, radius=br, bg="#000001",
-                                         rounded=(False, False, False, True), border_edges=(True, True, True, True))
+                                         rounded=(False, False, False, True),
+                                         border_edges=(True, True, True, True))
         self._btn_toggle.pack(side="left")
 
-        self._btn_reset = RoundedButton(self._btn_frame, text="🔄 Reset", command=self.reset_timer,
+        self._btn_reset = RoundedButton(self._btn_frame, text="↺  Reset", command=self.reset_timer,
                                         width=bw, height=bh, radius=br, bg="#000001",
-                                        rounded=(False, False, True, False), border_edges=(True, True, True, False))
+                                        rounded=(False, False, True, False),
+                                        border_edges=(True, True, True, False))
         self._btn_reset.pack(side="left")
 
     def toggle_timer(self) -> None:
@@ -584,16 +623,21 @@ class PomodoroTimer:
 
     def _start(self) -> None:
         self.engine.start()
-        self._btn_toggle.update(text="⏸️ Pause")
+        if hasattr(self, '_btn_toggle') and self._btn_toggle.winfo_exists():
+            self._btn_toggle.update(text="⏸  Pause")
         self._tick()
 
     def _stop(self) -> None:
         self.engine.stop()
-        self._btn_toggle.update(text="▶ Start")
+        if hasattr(self, '_btn_toggle') and self._btn_toggle.winfo_exists():
+            self._btn_toggle.update(text="▶  Start")
         if self._timer_id:
             self.root.after_cancel(self._timer_id)
             self._timer_id = None
-        self._update_skip_visibility()
+        if not self._is_mini:
+            self._update_skip_visibility()
+        else:
+            self._refresh_display()
 
     def reset_timer(self) -> None:
         self._save_session_progress()
@@ -636,7 +680,7 @@ class PomodoroTimer:
         if self.settings.focus_min > old_f:
             info.append(f"🚀 Focus increased to {self.settings.focus_min}m!")
         
-        msg = "\n".join(info + ["Session complete!", f"Take a {self.settings.break_min} min break."])
+        msg = "\n".join(info + ["Session complete!", f"Take a {self.engine.remaining_seconds // 60} min break."])
         buttons = [{"text": "Start Break", "command": self._start}, {"text": "Skip Break", "command": self.skip_break}]
         self._show_dialog("Break Time", msg, buttons=buttons)
 
@@ -665,7 +709,7 @@ class PomodoroTimer:
             self._refresh_display()
 
     def _show_dialog(self, title: str, message: str, buttons: list = None, is_error: bool = False) -> None:
-        width_pad = " " * 60
+        width_pad = " " * 85
         padded_msg = f"{width_pad}\n{message}\n{width_pad}"
         try:
             winsound.MessageBeep(winsound.MB_ICONHAND if is_error else winsound.MB_ICONASTERISK)
@@ -681,10 +725,134 @@ class PomodoroTimer:
             func = messagebox.showerror if is_error else messagebox.showinfo
             func(title, padded_msg, parent=self.root)
 
+    def _toggle_mini_mode(self) -> None:
+        self._is_mini = not self._is_mini
+        x, y = self.root.winfo_x(), self.root.winfo_y()
+        if self._is_mini:
+            w, h = 110, 35
+            self.root.geometry(f"{w}x{h}+{x}+{y}")
+            self.bg_canvas.config(width=w, height=h)
+            # Re-bind for mini mode
+            self.bg_canvas.bind("<Button-1>",        self._on_mini_click)
+            self.bg_canvas.bind("<B1-Motion>",       self._drag_move)
+            self.bg_canvas.bind("<ButtonRelease-1>", self._on_mini_release)
+            self.bg_canvas.bind("<Double-Button-1>", self._on_mini_double_click)
+            # Destroy all other widgets
+            for child in self.root.winfo_children():
+                if child != self.bg_canvas:
+                    child.destroy()
+        else:
+            w, h = WIN_W, WIN_H
+            self.root.geometry(f"{w}x{h}+{x}+{y}")
+            self.bg_canvas.config(width=w, height=h)
+            self.bg_canvas.unbind("<Double-Button-1>")
+            self.bg_canvas.unbind("<Button-1>")
+            self.bg_canvas.unbind("<ButtonRelease-1>")
+            self.bg_canvas.unbind("<B1-Motion>")
+            self.bg_canvas.bind("<Button-1>", self._drag_start)
+            self.bg_canvas.bind("<B1-Motion>", self._drag_move)
+            draw_rounded_window_bg(self.bg_canvas, w, h, 12, BG_COLOR, OUTLINE_COLOR)
+            self._build_ui()
+        self._refresh_display()
+
+    def _on_mini_click(self, event) -> None:
+        self._drag_start(event)
+        self._click_pos = (event.x, event.y)
+        self._double_click_pending = False
+
+    def _on_mini_double_click(self, event) -> None:
+        self._double_click_pending = True
+        self._toggle_mini_mode()
+
+    def _on_mini_release(self, event) -> None:
+        if self._double_click_pending:
+            return  # Swallow — was a double-click expand, not a single toggle
+        if hasattr(self, '_click_pos'):
+            dx = abs(event.x - self._click_pos[0])
+            dy = abs(event.y - self._click_pos[1])
+            if dx < 3 and dy < 3:
+                self.toggle_timer()
+
+    def _update_mini_view(self, time_str: str) -> None:
+        w, h = 110, 35
+        r = 10 
+        pct = 0
+        if self.engine.initial_seconds > 0:
+            elapsed = self.engine.initial_seconds - self.engine.remaining_seconds
+            pct = min(elapsed / self.engine.initial_seconds, 1.0)
+            
+        color = BTN_COLOR if self.engine.is_focus else "#ffb347"
+        bg_color = "#1a1a1a"
+        self.bg_canvas.delete("all")
+        
+        # 1. Base Progress/BG layer (Rectangular)
+        pw = int(w * pct)
+        self.bg_canvas.create_rectangle(0, 0, pw, h, fill=color, outline="")
+        self.bg_canvas.create_rectangle(pw, 0, w, h, fill=bg_color, outline="")
+        
+        # 2. MASK Corners with #000001 (Transparency)
+        self._draw_corner_mask(0, 0, r, "tl")
+        self._draw_corner_mask(w, 0, r, "tr")
+        self._draw_corner_mask(0, h, r, "bl")
+        self._draw_corner_mask(w, h, r, "br")
+        
+        # 3. Outline
+        self._draw_outline_only(w, h, r, OUTLINE_COLOR)
+        
+        # 4. Time
+        self.bg_canvas.create_text(w/2, h/2, text=time_str, fill="white", font=("Fira Code", 12, "bold"))
+
+    def _draw_corner_mask(self, x, y, r, corner) -> None:
+        """Draw an 'outer' corner mask in transparency color."""
+        points = [x, y]
+        if corner == "tl":
+            points.extend([x+r, y])
+            for i in range(90, 181, 10):
+                rad = math.radians(i)
+                points.extend([x+r + r*math.cos(rad), y+r - r*math.sin(rad)])
+            points.extend([x, y+r])
+        elif corner == "tr":
+            points.extend([x-r, y])
+            for i in range(90, -1, -10):
+                rad = math.radians(i)
+                points.extend([x-r + r*math.cos(rad), y+r - r*math.sin(rad)])
+            points.extend([x, y+r])
+        elif corner == "bl":
+            points.extend([x+r, y])
+            for i in range(270, 179, -10):
+                rad = math.radians(i)
+                points.extend([x+r + r*math.cos(rad), y-r - r*math.sin(rad)])
+            points.extend([x, y-r])
+        elif corner == "br":
+            points.extend([x-r, y])
+            for i in range(270, 361, 10):
+                rad = math.radians(i)
+                points.extend([x-r + r*math.cos(rad), y-r - r*math.sin(rad)])
+            points.extend([x, y-r])
+        self.bg_canvas.create_polygon(points, fill="#000001", outline="#000001")
+
+    def _draw_outline_only(self, w, h, r, color) -> None:
+        """Draw only the rounded border outline."""
+        self.bg_canvas.create_arc(0, 0, 2*r-1, 2*r-1, start=90, extent=90, outline=color, style="arc")
+        self.bg_canvas.create_arc(w-2*r, 0, w-1, 2*r-1, start=0, extent=90, outline=color, style="arc")
+        self.bg_canvas.create_arc(w-2*r, h-2*r, w-1, h-1, start=270, extent=90, outline=color, style="arc")
+        self.bg_canvas.create_arc(0, h-2*r, 2*r-1, h-1, start=180, extent=90, outline=color, style="arc")
+        self.bg_canvas.create_line(r, 0, w-r, 0, fill=color)
+        self.bg_canvas.create_line(r, h-1, w-r, h-1, fill=color)
+        self.bg_canvas.create_line(0, r, 0, h-r, fill=color)
+        self.bg_canvas.create_line(w-1, r, w-1, h-r, fill=color)
+
     def _refresh_display(self) -> None:
         mins, secs = divmod(self.engine.remaining_seconds, 60)
-        self._lbl_time.config(text=f"{mins:02d}:{secs:02d}")
-        status = f"FOCUS ({self.engine.completed_sessions + 1})" if self.engine.is_focus else "BREAK"
+        time_str = f"{mins:02d}:{secs:02d}"
+        
+        if self._is_mini:
+            self._update_mini_view(time_str)
+            return
+
+        self._lbl_time.config(text=time_str)
+        n = self.engine.completed_sessions + 1
+        status = f"FOCUS  {n}" if self.engine.is_focus else "BREAK"
         self._lbl_status.config(text=status)
         self._update_skip_visibility()
 

@@ -20,14 +20,23 @@ The timer intelligently scales with your productivity. After completing a config
 ### 📊 Productivity Analytics
 Stay motivated with built-in weekly statistics. Track your daily focus minutes over the last 7 days through a clean, visual bar chart accessible directly within the app.
 
-### 🎨 Premium Frameless UI
-- **Modern Aesthetics**: Sleek dark-themed interface with neon blue accents.
-- **Micro-Animations**: Smooth hover effects and interactive button states.
-- **Smart Layout**: A compact, draggable, and "Always on Top" window that stays out of your way but remains accessible.
-- **Custom Widgets**: Hand-crafted rounded buttons and specialized UI components built from scratch using Tkinter.
-
 ### ⚙️ Intelligent Break Logic
-Choose between manual break settings or "Auto" mode, which intelligently scales your recovery time based on the length of your focus session (5, 10, or 15-minute breaks).
+Choose between manual break settings or "Auto" mode, which dynamically calculates your recovery time based on session intensity:
+- **≤ 10m Focus**: 2m break
+- **≤ 20m Focus**: 5m break
+- **< 60m Focus**: 10m break
+- **≥ 60m Focus**: 15m break
+
+### 💊 Mini Mode
+A compact, pill-shaped interface for minimal distraction:
+- **Real-time Progress**: The background fills as a progress bar.
+- **Quick Controls**: Single-click to Start/Pause, Double-click to expand to full view.
+- **Window Management**: Perfectly draggable and stays "Always on Top."
+
+### 🎨 Pixel-Perfect Frameless UI
+- **Mathematically Precise**: Hand-corrected arc bounding boxes for a perfectly symmetric 1px border.
+- **Seamless Design**: Bottom action buttons are integrated into the window frame for a unified look.
+- **Modern Iconography**: Clean, high-resolution vector symbols for settings, stats, and window controls.
 
 ---
 
