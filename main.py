@@ -8,6 +8,8 @@ import json
 import csv
 import math
 from datetime import datetime, timedelta
+import random
+import subprocess
 
 def get_app_path(filename: str) -> str:
     """Returns the absolute path to a file, suitable for both dev and PyInstaller EXE."""
@@ -25,7 +27,7 @@ FONT_BTN    = ("Fira Code", 11, "bold")
 FONT_LABEL  = ("Fira Code", 10)
 FONT_CLOSE  = ("Fira Code", 8)
 CONFIG_NAME = "config.json"
-STATS_NAME  = "stats.csv"
+STATS_NAME  = "stats.json"
 
 DEFAULTS = {
     "focus_min":    25,
@@ -34,7 +36,20 @@ DEFAULTS = {
     "auto_inc_val": 2,
     "inc_threshold": 5,
     "max_focus_min": 60,
+    "daily_target_hrs": 8,
 }
+
+BREAK_TASKS = [
+    "Do 5 pushups to re-energize.",
+    "Stretch your arms and shoulders.",
+    "Close your eyes and meditate for 60 seconds.",
+    "Take a quick walk around the room.",
+    "Hydrate! Drink a glass of water.",
+    "Practice 1 minute of deep breathing.",
+    "Rest your eyes: Look at something 20 feet away.",
+    "Do 10 jumping jacks for a quick boost.",
+    "Perform a quick neck and wrist stretch."
+]
 
 # ── UI Constants ───────────────────────────────────────────────────────────────
 DIALOG_WIDTH  = 270
@@ -82,39 +97,63 @@ class SettingsManager:
     def inc_threshold(self): return self.data["inc_threshold"]
     @property
     def max_focus_min(self): return self.data["max_focus_min"]
+    @property
+    def daily_target_hrs(self): return self.data.get("daily_target_hrs", 8)
 
 class StatsManager:
-    """Handles daily focus time tracking."""
+    """Handles daily focus time tracking with session granularity."""
     def __init__(self, filename: str):
         self.path = get_app_path(filename)
-        self.stats = {}
+        self.data = {}
         self.load()
-
     def load(self):
         if os.path.exists(self.path):
             try:
-                with open(self.path, newline='') as f:
-                    reader = csv.reader(f)
-                    for row in reader:
-                        if len(row) == 2:
-                            self.stats[row[0]] = int(row[1])
-            except (OSError, ValueError):
-                pass
+                with open(self.path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        self.data = json.loads(content)
+                    else:
+                        self.data = {}
+            except (json.JSONDecodeError, OSError):
+                self.data = {}
+        else:
+            self.data = {}
 
     def record_focus(self, seconds: int):
         if seconds <= 0: return
-        today = str(datetime.now().date())
-        self.stats[today] = self.stats.get(today, 0) + seconds
+        now = datetime.now()
+        date_str = str(now.date())
+        time_str = now.strftime("%H:%M:%S")
+
+        if date_str not in self.data:
+            self.data[date_str] = {"total": 0, "sessions": []}
+        
+        self.data[date_str]["total"] += seconds
+        self.data[date_str]["sessions"].append({"t": time_str, "d": seconds})
         self.save()
 
     def save(self):
         try:
-            with open(self.path, "w", newline='') as f:
-                writer = csv.writer(f)
-                for date, secs in self.stats.items():
-                    writer.writerow([date, secs])
+            temp_path = self.path + ".tmp"
+            with open(temp_path, "w") as f:
+                json.dump(self.data, f, indent=4)
+            os.replace(temp_path, self.path)
         except OSError:
             pass
+
+    @property
+    def stats(self):
+        """Returns a compatible dict of {date: total_seconds} for the UI."""
+        res = {}
+        if not isinstance(self.data, dict):
+            return res
+        for d, info in self.data.items():
+            if isinstance(info, dict):
+                res[d] = info.get("total", 0)
+            elif isinstance(info, (int, float)):
+                res[d] = int(info)
+        return res
 
 class TimerEngine:
     """Core timer logic, independent of UI components."""
@@ -230,6 +269,23 @@ def draw_rounded_window_bg(canvas: tk.Canvas, w: int, h: int, r: int, fill: str,
     canvas.create_line(r, h-1, w-r, h-1, fill=outline)
     canvas.create_line(0, r, 0, h-r, fill=outline)
     canvas.create_line(w-1, r, w-1, h-r, fill=outline)
+
+
+
+def draw_timer_box(canvas: tk.Canvas, w: int, h: int, r: int) -> None:
+    """Draw a clean background box that matches the main app background."""
+    canvas.delete("timer_bg")
+    # Using the exact same color as the rest of the background for a seamless look
+    fill_col = BG_COLOR
+    
+    # We only draw the fill to ensure the text has a clean area, 
+    # but since it's the same color as BG_COLOR, it will be seamless.
+    canvas.create_rectangle(r, 0, w-r, h, fill=fill_col, outline="", tags="timer_bg")
+    canvas.create_rectangle(0, r, w, h-r, fill=fill_col, outline="", tags="timer_bg")
+    canvas.create_arc(0, 0, r*2, r*2, start=90, extent=90, fill=fill_col, outline="", tags="timer_bg")
+    canvas.create_arc(w-r*2, 0, w, r*2, start=0, extent=90, fill=fill_col, outline="", tags="timer_bg")
+    canvas.create_arc(w-r*2, h-r*2, w, h, start=270, extent=90, fill=fill_col, outline="", tags="timer_bg")
+    canvas.create_arc(0, h-r*2, r*2, h, start=180, extent=90, fill=fill_col, outline="", tags="timer_bg")
 
 
 # ── Widgets ────────────────────────────────────────────────────────────────────
@@ -373,7 +429,7 @@ class SettingsWindow(DraggableWindow):
     """A frameless, draggable Toplevel for editing app settings."""
 
     def __init__(self, parent: tk.Misc, timer: "PomodoroTimer"):
-        super().__init__(parent, DIALOG_WIDTH, DIALOG_HEIGHT)
+        super().__init__(parent, DIALOG_WIDTH, DIALOG_HEIGHT + 40)
         self._timer = timer
         self._build_ui()
 
@@ -402,6 +458,7 @@ class SettingsWindow(DraggableWindow):
         self._a  = self._make_row("Increment By", t.settings.auto_inc_val)
         self._th = self._make_row("Increment Every", t.settings.inc_threshold)
         self._mf = self._make_row("Max Focus", t.settings.max_focus_min)
+        self._dt = self._make_row("Daily Target (h)", t.settings.daily_target_hrs)
 
         RoundedButton(self, text="💾 Save", command=self._save,
                       color=BTN_COLOR, width=DIALOG_WIDTH - 40).pack(pady=15)
@@ -446,24 +503,26 @@ class SettingsWindow(DraggableWindow):
                 auto_inc_val = int(self._a.get()),
                 inc_threshold= int(self._th.get()),
                 max_focus_min= int(self._mf.get()),
+                daily_target_hrs= float(self._dt.get()),
             )
             self.destroy()
         except ValueError:
-            messagebox.showerror("Error", "Please enter a valid number!", parent=self)
+            messagebox.showerror("Error", "Please enter a valid number !", parent=self)
 
 
 # ── Stats window ───────────────────────────────────────────────────────────────
 class StatsWindow(DraggableWindow):
     """A frameless, draggable Toplevel for viewing weekly focus history."""
 
-    def __init__(self, parent: tk.Misc, stats: dict):
-        super().__init__(parent, DIALOG_WIDTH, DIALOG_HEIGHT)
-        self._stats = stats
+    def __init__(self, parent: tk.Misc, timer: "PomodoroTimer"):
+        super().__init__(parent, DIALOG_WIDTH, DIALOG_HEIGHT + 20)
+        self._timer = timer
+        self._stats = timer.stats_mgr.stats
         self._build_ui()
 
     def _build_ui(self) -> None:
         # Title and Close button
-        tk.Label(self, text="STATS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR
+        tk.Label(self, text="STATISTICS", font=FONT_BTN, fg=BTN_COLOR, bg=BG_COLOR
                  ).place(x=DIALOG_WIDTH//2, y=18, anchor="center")
         
         tk.Button(self, text="×", font=("Segoe UI", 12), command=self.destroy,
@@ -474,35 +533,119 @@ class StatsWindow(DraggableWindow):
         # Top horizontal divider
         tk.Frame(self, height=1, bg=DIVIDER_COLOR).pack(fill="x", padx=0, pady=(35, 0))
 
-        # Container for bars
-        container = tk.Frame(self, bg=BG_COLOR)
-        container.pack(fill="both", expand=True, padx=20, pady=10)
+        # Stats Summary
+        header = tk.Frame(self, bg=BG_COLOR)
+        header.pack(fill="x", padx=20, pady=10)
 
-        # Get last 7 days
-        today = datetime.now().date()
-        days = [(today - timedelta(days=i)) for i in range(6, -1, -1)]
+        today_date = str(datetime.now().date())
+        today_secs = self._stats.get(today_date, 0)
         
-        max_val = max([self._stats.get(str(d), 0) for d in days] + [3600]) # Minimum scale of 1 hour
+        now = datetime.now().date()
+        week_secs = sum(self._stats.get(str(now - timedelta(days=i)), 0) for i in range(7))
+        target_hrs = self._timer.settings.daily_target_hrs
+
+        def make_stat(parent, label, value, row, col):
+            f = tk.Frame(parent, bg=BG_COLOR)
+            f.grid(row=row, column=col, sticky="w", padx=5)
+            tk.Label(f, text=label, font=("Fira Code", 8), fg="#888", bg=BG_COLOR).pack(anchor="w")
+            tk.Label(f, text=value, font=("Fira Code", 10, "bold"), fg="white", bg=BG_COLOR).pack(anchor="w")
+
+        make_stat(header, "TODAY", f"{today_secs/3600:.1f}h", 0, 0)
+        make_stat(header, "WEEK", f"{week_secs/3600:.1f}h", 0, 1)
+
+        t_frame = tk.Frame(header, bg=BG_COLOR)
+        t_frame.grid(row=0, column=2, sticky="w", padx=5)
+        tk.Label(t_frame, text="TARGET(h)", font=("Fira Code", 8), fg=BTN_COLOR, bg=BG_COLOR).pack(anchor="w")
+        self._t_entry = tk.Entry(t_frame, width=4, bg="#444345", fg="white", bd=0, highlightthickness=1, 
+                                highlightbackground="#555", insertbackground="white", font=("Fira Code", 9, "bold"))
+        self._t_entry.insert(0, str(target_hrs))
+        self._t_entry.pack(side="left")
+        tk.Button(t_frame, text="ok", font=("Fira Code", 7), bg=BG_COLOR, fg="#888", bd=0, command=self._save_t).pack(side="left")
+
+        header.columnconfigure((0,1,2), weight=1)
+        tk.Frame(self, height=1, bg=DIVIDER_COLOR).pack(fill="x", padx=20, pady=5)
+
+        # Scrollable area
+        container = tk.Frame(self, bg=BG_COLOR)
+        container.pack(fill="both", expand=True, padx=(20, 5), pady=(0, 10))
+        canvas = tk.Canvas(container, bg=BG_COLOR, highlightthickness=0)
+        sb = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg=BG_COLOR)
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0,0), window=scroll_frame, anchor="nw", width=DIALOG_WIDTH-50)
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        days = [(now - timedelta(days=i)) for i in range(13, -1, -1)]
+        max_val = max([self._stats.get(str(d), 0) for d in days] + [target_hrs*3600, 3600])
 
         for d in days:
-            d_str = str(d)
-            val = self._stats.get(d_str, 0)
-            day_name = d.strftime("%a %d/%m")
-            
-            row = tk.Frame(container, bg=BG_COLOR)
-            row.pack(fill="x", pady=2)
-            
-            tk.Label(row, text=day_name, font=FONT_LABEL, fg="#aaa", bg=BG_COLOR, width=10, anchor="w").pack(side="left")
-            
-            # Progress bar simulation
-            bar_bg = tk.Frame(row, bg="#444345", height=12)
-            bar_bg.pack(side="left", fill="x", expand=True, padx=(5, 10))
-            
-            pct = min(val / max_val, 1.0)
+            val = self._stats.get(str(d), 0)
+            row = tk.Frame(scroll_frame, bg=BG_COLOR)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=d.strftime("%a %d/%m"), font=("Fira Code", 8), fg="#888", bg=BG_COLOR, width=10, anchor="w").pack(side="left")
+            bar_bg = tk.Frame(row, bg="#2a2a2c", height=12)
+            bar_bg.pack(side="left", fill="x", expand=True, padx=5)
+            pct = min(val/max_val, 1.0)
             if val > 0:
-                tk.Frame(bar_bg, bg=BTN_COLOR, width=int(pct * 120), height=12).place(x=0, y=0)
+                color = BTN_COLOR if val >= (target_hrs*3600) else "#50a0c0"
+                tk.Frame(bar_bg, bg=color, height=12).place(relx=0, rely=0, relwidth=pct)
+            tk.Label(row, text=f"{val/3600:.1f}h", font=("Fira Code", 8), fg="white", bg=BG_COLOR, width=4).pack(side="right")
+
+    def _save_t(self) -> None:
+        try:
+            self._timer.settings.update(daily_target_hrs=float(self._t_entry.get()))
+            self._t_entry.config(highlightbackground=BTN_COLOR)
+        except: pass
+
+
+class ToastWindow(DraggableWindow):
+    """A professional-looking non-blocking notification that mimics Windows Toasts."""
+    def __init__(self, parent, title: str, message: str, buttons: list):
+        # Width 320, Height 140 (enough for text + buttons)
+        w, h = 320, 140
+        super().__init__(parent, w, h)
+        
+        # Position at bottom right (above taskbar)
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{sw - w - 20}+{sh - h - 60}")
+        
+        # Override background color for a "toast" feel (slightly lighter)
+        self.bg_canvas.delete("all")
+        draw_rounded_window_bg(self.bg_canvas, w, h, 12, "#3d3c3f", "#555")
+
+        # Icon/Logo (optional, using text for now)
+        tk.Label(self, text="🔔", font=("Segoe UI Symbol", 14), fg=BTN_COLOR, bg="#3d3c3f").place(x=20, y=20)
+        
+        # Title
+        tk.Label(self, text=title.upper(), font=("Fira Code", 9, "bold"), fg=BTN_COLOR, bg="#3d3c3f").place(x=55, y=20)
+        
+        # Message
+        msg_lbl = tk.Label(self, text=message, font=("Segoe UI", 9), fg="white", bg="#3d3c3f", 
+                           justify="left", wraplength=280)
+        msg_lbl.place(x=25, y=50)
+
+        # Buttons
+        btn_frame = tk.Frame(self, bg="#3d3c3f")
+        btn_frame.place(x=w-20, y=h-20, anchor="se")
+        
+        for btn_info in reversed(buttons):
+            cmd = btn_info["command"]
+            # Wrap command to also destroy the toast
+            def make_cmd(c=cmd):
+                if c: c()
+                self.destroy()
             
-            tk.Label(row, text=f"{val//60}m", font=FONT_LABEL, fg="white", bg=BG_COLOR, width=4).pack(side="right")
+            b = RoundedButton(btn_frame, text=btn_info["text"], command=make_cmd,
+                              width=90, height=28, radius=6, color="#4c4b4e", bg="#3d3c3f",
+                              font=("Segoe UI", 8, "bold"))
+            b.pack(side="right", padx=5)
+
+        # Auto-close after 10 seconds if no action
+        self.after(10000, self.destroy)
+        winsound.MessageBeep(winsound.MB_ICONASTERISK)
 
 
 # ── Main app ───────────────────────────────────────────────────────────────────
@@ -582,9 +725,11 @@ class PomodoroTimer:
         # Divider below title bar
         tk.Frame(self.root, height=1, bg=DIVIDER_COLOR).pack(fill="x", padx=0, pady=(TITLE_H, 0))
 
-        # Timer display
-        self._lbl_time = tk.Label(self.root, text="00:00", font=FONT_MAIN, fg="white", bg=BG_COLOR)
-        self._lbl_time.pack(pady=(8, 0))
+        # Timer display inside a clean background box
+        self._timer_canvas = tk.Canvas(self.root, width=160, height=70, bg=BG_COLOR, highlightthickness=0)
+        self._timer_canvas.pack(pady=(10, 0))
+        draw_timer_box(self._timer_canvas, 160, 70, 12)
+        self._timer_text = self._timer_canvas.create_text(80, 35, text="00:00", font=FONT_MAIN, fill="white")
 
         # Skip button + divider (hidden until active)
         self._btn_skip = RoundedButton(self.root, text="⏭  Skip", command=self.skip_current_period,
@@ -676,21 +821,23 @@ class PomodoroTimer:
             self._start()
             return
 
-        info = []
+        msg = "Focus session completed. Proceed to your break?"
         if self.settings.focus_min > old_f:
-            info.append(f"🚀 Focus increased to {self.settings.focus_min}m!")
+            msg = f"🚀 Focus increased to {self.settings.focus_min}m!\n" + msg
         
-        msg = "\n".join(info + ["Session complete!", f"Take a {self.engine.remaining_seconds // 60} min break."])
-        buttons = [{"text": "Start Break", "command": self._start}, {"text": "Skip Break", "command": self.skip_break}]
-        self._show_dialog("Break Time", msg, buttons=buttons)
+        self._show_dialog("Break Time", msg, buttons=[
+            {"text": "Start Break", "command": self._start},
+            {"text": "Skip", "command": self.skip_break}
+        ])
 
     def _handle_break_end(self, silent: bool = False) -> None:
         self.engine.transition_to_focus()
         if silent:
             self._start()
             return
-        buttons = [{"text": "Start Focus", "command": self._start}, {"text": "End Session", "command": self.reset_timer}]
-        self._show_dialog("Back to Work", "Break over! Time to focus.", buttons=buttons)
+        self._show_dialog("Break Concluded", "The break period has ended. Resume focus session?", buttons=[
+            {"text": "Resume", "command": self._start}
+        ])
 
     def skip_break(self) -> None:
         self.engine.transition_to_focus()
@@ -709,21 +856,30 @@ class PomodoroTimer:
             self._refresh_display()
 
     def _show_dialog(self, title: str, message: str, buttons: list = None, is_error: bool = False) -> None:
-        width_pad = " " * 85
-        padded_msg = f"{width_pad}\n{message}\n{width_pad}"
-        try:
-            winsound.MessageBeep(winsound.MB_ICONHAND if is_error else winsound.MB_ICONASTERISK)
-        except Exception: pass
-
-        if buttons and len(buttons) >= 2:
-            prompt = f"{padded_msg}\n\nDo you want to {buttons[0]['text']}?"
-            if messagebox.askyesno(title, prompt, parent=self.root):
-                if buttons[0]["command"]: buttons[0]["command"]()
-            else:
-                if buttons[1]["command"]: buttons[1]["command"]()
+        if is_error:
+            messagebox.showerror(title, message, parent=self.root)
         else:
-            func = messagebox.showerror if is_error else messagebox.showinfo
-            func(title, padded_msg, parent=self.root)
+            ToastWindow(self.root, title, message, buttons or [])
+
+    def _show_notification(self, title: str, message: str) -> None:
+        """Shows a Windows system notification using PowerShell."""
+        # Escape single quotes for PowerShell
+        safe_msg = message.replace("'", "''")
+        safe_title = title.replace("'", "''")
+        script = f"""
+        [reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null
+        $notification = New-Object System.Windows.Forms.NotifyIcon
+        $notification.Icon = [System.Drawing.Icon]::ExtractAssociatedIcon((Get-Process -id $pid).Path)
+        $notification.BalloonTipTitle = '{safe_title}'
+        $notification.BalloonTipText = '{safe_msg}'
+        $notification.Visible = $True
+        $notification.ShowBalloonTip(5000)
+        """
+        try:
+            subprocess.Popen(["powershell", "-Command", script], 
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception:
+            pass
 
     def _toggle_mini_mode(self) -> None:
         self._is_mini = not self._is_mini
@@ -761,6 +917,8 @@ class PomodoroTimer:
         self._double_click_pending = False
 
     def _on_mini_double_click(self, event) -> None:
+        if hasattr(self, '_single_click_job'):
+            self.root.after_cancel(self._single_click_job)
         self._double_click_pending = True
         self._toggle_mini_mode()
 
@@ -771,7 +929,8 @@ class PomodoroTimer:
             dx = abs(event.x - self._click_pos[0])
             dy = abs(event.y - self._click_pos[1])
             if dx < 3 and dy < 3:
-                self.toggle_timer()
+                # Use a small delay to allow double-click to cancel this
+                self._single_click_job = self.root.after(200, self.toggle_timer)
 
     def _update_mini_view(self, time_str: str) -> None:
         w, h = 110, 35
@@ -850,7 +1009,10 @@ class PomodoroTimer:
             self._update_mini_view(time_str)
             return
 
-        self._lbl_time.config(text=time_str)
+        # Update timer display
+        self._timer_canvas.itemconfig(self._timer_text, text=time_str)
+        # Ensure text stays on top
+        self._timer_canvas.tag_raise(self._timer_text)
         n = self.engine.completed_sessions + 1
         status = f"FOCUS  {n}" if self.engine.is_focus else "BREAK"
         self._lbl_status.config(text=status)
@@ -858,11 +1020,12 @@ class PomodoroTimer:
 
     def _update_skip_visibility(self) -> None:
         initial = (self.settings.focus_min if self.engine.is_focus else self.settings.break_min) * 60
-        is_active = self.engine.running or self.engine.remaining_seconds < initial
+        # Show skip button if active OR if we're at the start of a period (waiting for user)
+        is_active = self.engine.running or self.engine.remaining_seconds <= initial
         if is_active:
             if self._lbl_idle.winfo_ismapped(): self._lbl_idle.pack_forget()
             if not self._btn_skip.winfo_ismapped():
-                self._skip_divider.pack(after=self._lbl_time, fill="x", pady=(10, 0))
+                self._skip_divider.pack(after=self._timer_canvas, fill="x", pady=(10, 0))
                 self._btn_skip.pack(after=self._skip_divider, pady=(10, 10))
         else:
             if self._btn_skip.winfo_ismapped():
@@ -870,10 +1033,10 @@ class PomodoroTimer:
                 self._btn_skip.pack_forget()
             if not self._lbl_idle.winfo_ismapped():
                 self._lbl_idle.config(text="Ready to focus?" if self.engine.is_focus else "Take a breather")
-                self._lbl_idle.pack(after=self._lbl_time, pady=(25, 0))
+                self._lbl_idle.pack(after=self._timer_canvas, pady=(25, 0))
 
     def _open_settings(self) -> None: SettingsWindow(self.root, self)
-    def _open_stats(self) -> None: StatsWindow(self.root, self.stats_mgr.stats)
+    def _open_stats(self) -> None: StatsWindow(self.root, self)
 
     def apply_settings(self, **kwargs) -> None:
         self.settings.update(**kwargs)

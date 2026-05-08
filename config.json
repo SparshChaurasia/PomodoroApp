@@ -1,8 +1,9 @@
 {
     "focus_min": 10,
-    "break_min": 5,
+    "break_min": 2,
     "break_auto": true,
     "auto_inc_val": 10,
     "inc_threshold": 4,
-    "max_focus_min": 60
+    "max_focus_min": 60,
+    "daily_target_hrs": 6
 }
